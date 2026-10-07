@@ -8,6 +8,7 @@ import { Proposal } from '../types/domain.js';
 describe('Repositório de Persistência JSON (TASK-004)', () => {
   let tempDir: string;
   let repo: JsonRepository;
+  const userId = 'test-user';
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pintura-test-'));
@@ -87,7 +88,10 @@ describe('Repositório de Persistência JSON (TASK-004)', () => {
     };
 
     await repo.saveProposal(otherUser as Proposal, 'user-1');
-    await repo.saveProposal(anonymousProposal, undefined);
+    await fs.writeFile(path.join(tempDir, 'proposals.json'), JSON.stringify([
+      ...(await repo.listProposals('user-1')),
+      anonymousProposal,
+    ]));
 
     const listForUser2 = await repo.listProposals('user-2');
     expect(listForUser2).toHaveLength(0);
@@ -100,6 +104,7 @@ describe('Repositório de Persistência JSON (TASK-004)', () => {
   it('deve criar, listar, atualizar e deletar uma proposta', async () => {
     const newProposal: Proposal = {
       id: 'test-1',
+      userId,
       proposalNumber: '',
       createdAt: '',
       updatedAt: '',
@@ -123,40 +128,40 @@ describe('Repositório de Persistência JSON (TASK-004)', () => {
       },
     };
 
-    const saved = await repo.saveProposal(newProposal);
+    const saved = await repo.saveProposal(newProposal, userId);
     expect(saved.id).toBe('test-1');
     expect(saved.proposalNumber).toContain('PROP-');
     expect(saved.createdAt).toBeDefined();
 
-    const list = await repo.listProposals();
+    const list = await repo.listProposals(userId);
     expect(list).toHaveLength(1);
     expect(list[0].client.name).toBe('Cliente Teste');
 
-    const fetched = await repo.getProposalById('test-1');
+    const fetched = await repo.getProposalById('test-1', userId);
     expect(fetched?.pricing.totalAmount).toBe(15000);
 
     // Atualização
     saved.pricing.totalAmount = 18000;
     saved.pricing.netAmount = 18000;
-    await repo.saveProposal(saved);
+    await repo.saveProposal(saved, userId);
 
-    const updatedList = await repo.listProposals();
+    const updatedList = await repo.listProposals(userId);
     expect(updatedList[0].pricing.totalAmount).toBe(18000);
 
     // Duplicação
-    const duplicated = await repo.duplicateProposal('test-1', 'Cliente Cópia');
+    const duplicated = await repo.duplicateProposal('test-1', 'Cliente Cópia', userId);
     expect(duplicated).toBeDefined();
     expect(duplicated?.id).not.toBe('test-1');
     expect(duplicated?.client.name).toBe('Cliente Cópia');
 
-    const listAfterDup = await repo.listProposals();
+    const listAfterDup = await repo.listProposals(userId);
     expect(listAfterDup).toHaveLength(2);
 
     // Deleção
-    const deleted = await repo.deleteProposal('test-1');
+    const deleted = await repo.deleteProposal('test-1', userId);
     expect(deleted).toBe(true);
 
-    const finalList = await repo.listProposals();
+    const finalList = await repo.listProposals(userId);
     expect(finalList).toHaveLength(1);
     expect(finalList[0].id).toBe(duplicated?.id);
   });

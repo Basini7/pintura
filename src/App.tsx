@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Proposal, ProviderProfile, WorkAreaConfig, UserSubscription, PlanTier, User, AuthResponse } from './types.js';
+import { Proposal, ProviderProfile, WorkAreaConfig, UserSubscription, User, AuthResponse } from './types.js';
 import { api } from './services/api.js';
 import { Navbar } from './components/Navbar.js';
 import { LandingPage } from './components/LandingPage.js';
@@ -31,8 +31,8 @@ export const App: React.FC = () => {
   });
   const [profile, setProfile] = useState<ProviderProfile>({
     companyName: 'Pintura & Acabamentos Residenciais',
-    phones: ['(11) 90000-0000'],
-    address: 'Atendimento em toda a região',
+    phones: [],
+    address: '',
   });
   const [loading, setLoading] = useState(true);
 
@@ -113,8 +113,8 @@ export const App: React.FC = () => {
     setEditingProposal(null);
     setProfile({
       companyName: 'Pintura & Acabamentos Residenciais',
-      phones: ['(11) 90000-0000'],
-      address: 'Atendimento em toda a região',
+      phones: [],
+      address: '',
     });
     setUser(authData.user);
     if (authData.profile) setProfile(authData.profile);
@@ -137,8 +137,8 @@ export const App: React.FC = () => {
     setSubscription(null);
     setProfile({
       companyName: 'Pintura & Acabamentos Residenciais',
-      phones: ['(11) 90000-0000'],
-      address: 'Atendimento em toda a região',
+      phones: [],
+      address: '',
     });
     setActiveTab('landing');
     await api.logout();
@@ -228,19 +228,11 @@ export const App: React.FC = () => {
     }
 
     const kiwifyUrl = getKiwifyCheckoutUrl(planId, user);
-    if (kiwifyUrl) {
-      window.open(kiwifyUrl, '_blank');
+    if (!kiwifyUrl) {
+      alert('O checkout deste plano ainda não está configurado. A assinatura será ativada após a confirmação do pagamento.');
       return;
     }
-
-    try {
-      const updated = await api.upgradeSubscription(planId);
-      setSubscription(updated);
-      setActiveTab('new');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Erro ao ativar plano';
-      alert(msg);
-    }
+    window.open(kiwifyUrl, '_blank');
   };
 
   if (loading) {
@@ -325,9 +317,9 @@ export const App: React.FC = () => {
               onDuplicate={handleDuplicate}
               onDelete={handleDelete}
               onNew={handleNewProposal}
-              onViewPublic={(id) => {
-                setPublicProposalId(id);
-                window.location.hash = `proposta=${id}`;
+              onViewPublic={(token) => {
+                setPublicProposalId(token);
+                window.location.hash = `proposta=${token}`;
               }}
             />
           </div>
@@ -357,7 +349,6 @@ export const App: React.FC = () => {
         onClose={() => setIsUpgradeOpen(false)}
         subscription={subscription}
         user={user}
-        onPlanUpgraded={(updated) => setSubscription(updated)}
       />
     </div>
   );

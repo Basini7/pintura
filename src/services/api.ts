@@ -1,4 +1,4 @@
-import { Proposal, ProviderProfile, WorkAreaConfig, SelectedAreaScope, PricingSummary, UserSubscription, PlanTier, User, AuthResponse } from '../types.js';
+import { Proposal, PublicProposalDTO, ProviderProfile, WorkAreaConfig, SelectedAreaScope, PricingSummary, UserSubscription, User, AuthResponse } from '../types.js';
 
 const API_BASE = '/api';
 const TOKEN_KEY = 'proposta_pintor_auth_token';
@@ -51,7 +51,8 @@ export const api = {
       throw new Error(err.error || `Erro ao criar conta (${res.status})`);
     }
     const data: AuthResponse = await res.json();
-    setToken(data.token);
+    if (data.token) setToken(data.token);
+    else removeToken();
     return data;
   },
 
@@ -69,7 +70,8 @@ export const api = {
       throw new Error(err.error || 'E-mail ou senha incorretos');
     }
     const data: AuthResponse = await res.json();
-    setToken(data.token);
+    if (data.token) setToken(data.token);
+    else removeToken();
     return data;
   },
 
@@ -85,10 +87,9 @@ export const api = {
   },
 
   async getMe(): Promise<{ user: User; profile: ProviderProfile; subscription: UserSubscription } | null> {
-    const token = getToken();
-    if (!token) return null;
     const res = await fetch(`${API_BASE}/auth/me`, {
       headers: getAuthHeaders(),
+      credentials: 'same-origin',
     });
     if (!res.ok) {
       removeToken();
@@ -160,19 +161,6 @@ export const api = {
     return res.json();
   },
 
-  async upgradeSubscription(planId: PlanTier): Promise<UserSubscription> {
-    const res = await fetch(`${API_BASE}/subscription/upgrade`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ planId }),
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || 'Falha ao atualizar plano');
-    }
-    return res.json();
-  },
-
   // --- PROPOSTAS ---
   async getProposals(): Promise<Proposal[]> {
     const res = await fetch(`${API_BASE}/proposals`, {
@@ -231,14 +219,14 @@ export const api = {
   },
 
   // --- RASTREAMENTO E ASSINATURA PÚBLICA ---
-  async getPublicProposal(id: string): Promise<Proposal> {
-    const res = await fetch(`${API_BASE}/public/proposals/${id}`);
+  async getPublicProposal(token: string): Promise<{ proposal: PublicProposalDTO; profile: ProviderProfile; hasWatermark: boolean }> {
+    const res = await fetch(`${API_BASE}/public/proposals/${token}`);
     if (!res.ok) throw new Error('Falha ao carregar proposta');
     return res.json();
   },
 
-  async trackProposalView(id: string): Promise<Proposal> {
-    const res = await fetch(`${API_BASE}/proposals/${id}/view`, {
+  async trackProposalView(token: string): Promise<PublicProposalDTO> {
+    const res = await fetch(`${API_BASE}/public/proposals/${token}/view`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
@@ -246,8 +234,8 @@ export const api = {
     return res.json();
   },
 
-  async approveProposal(id: string, payload: { signerName: string; signature: string }): Promise<Proposal> {
-    const res = await fetch(`${API_BASE}/proposals/${id}/approve`, {
+  async approveProposal(token: string, payload: { signerName: string; signature: string }): Promise<PublicProposalDTO> {
+    const res = await fetch(`${API_BASE}/public/proposals/${token}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

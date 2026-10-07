@@ -202,15 +202,17 @@ export const ProposalList: React.FC<ProposalListProps> = ({
 
                 <div className="flex items-center space-x-1.5">
                   <button
+                    disabled={!item.publicToken}
                     onClick={() => {
+                      if (!item.publicToken) return;
                       if (onViewPublic) {
-                        onViewPublic(item.id);
+                        onViewPublic(item.publicToken);
                       } else {
-                        window.location.hash = `proposta=${item.id}`;
+                        window.location.hash = `proposta=${item.publicToken}`;
                       }
                     }}
-                    className="flex items-center space-x-1 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors border border-indigo-200"
-                    title="Visualizar Proposta Interativa"
+                    className="flex items-center space-x-1 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors border border-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={item.publicToken ? 'Visualizar Proposta Interativa' : 'Salve novamente para gerar um link público seguro'}
                   >
                     <Eye className="w-3.5 h-3.5" />
                     <span>Ver Online</span>

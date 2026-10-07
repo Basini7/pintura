@@ -1,6 +1,5 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { UserSubscription, PlanTier, User } from '../types.js';
-import { api } from '../services/api.js';
 import { getKiwifyCheckoutUrl, isValidPlanTier } from '../config/payments.js';
 import { 
   Check, 
@@ -18,7 +17,6 @@ interface UpgradeModalProps {
   onClose: () => void;
   subscription: UserSubscription | null;
   user?: User | null;
-  onPlanUpgraded: (updated: UserSubscription) => void;
 }
 
 export const UpgradeModal: React.FC<UpgradeModalProps> = ({
@@ -26,43 +24,25 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   onClose,
   subscription,
   user,
-  onPlanUpgraded,
 }) => {
-  const [loadingPlan, setLoadingPlan] = useState<PlanTier | null>(null);
-  const [successToast, setSuccessToast] = useState<string | null>(null);
-
   if (!isOpen) return null;
 
   const currentPlan = subscription?.planId || 'free';
+  const checkoutAvailable = (planId: Exclude<PlanTier, 'free'>) => Boolean(getKiwifyCheckoutUrl(planId, user));
 
-  const handleSelectPlan = async (planId: PlanTier) => {
+  const handleSelectPlan = (planId: PlanTier) => {
     if (!isValidPlanTier(planId) || planId === 'free') {
       alert('Plano inválido. Selecione uma opção de assinatura válida.');
       return;
     }
 
     const kiwifyUrl = getKiwifyCheckoutUrl(planId, user);
-    if (kiwifyUrl) {
-      window.open(kiwifyUrl, '_blank');
-      onClose();
+    if (!kiwifyUrl) {
+      alert('O checkout deste plano ainda não está configurado. A assinatura será ativada após a confirmação do pagamento.');
       return;
     }
-
-    try {
-      setLoadingPlan(planId);
-      const updated = await api.upgradeSubscription(planId);
-      onPlanUpgraded(updated);
-      setSuccessToast(`🎉 Plano atualizado para ${planId.toUpperCase()} com sucesso! Limites liberados.`);
-      setTimeout(() => {
-        setSuccessToast(null);
-        onClose();
-      }, 1500);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Falha ao atualizar plano';
-      alert(`Erro: ${msg}`);
-    } finally {
-      setLoadingPlan(null);
-    }
+    window.open(kiwifyUrl, '_blank');
+    onClose();
   };
 
   return (
@@ -77,12 +57,6 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
         </button>
 
         {/* Notificação interna de sucesso */}
-        {successToast && (
-          <div className="mb-4 bg-[#a4d4c5]/40 border border-[#a4d4c5] text-[#1a3a3a] p-3 rounded-xl text-center font-bold text-sm">
-            {successToast}
-          </div>
-        )}
-
         {/* Cabeçalho de Conversão Clay Style */}
         <div className="text-center max-w-xl mx-auto mb-8 space-y-2">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-[#f5f0e0] border border-[#e5e5e5] text-[#0a0a0a] rounded-full text-xs font-bold mb-1">
@@ -146,10 +120,10 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
             <button
               onClick={() => handleSelectPlan('basic')}
-              disabled={loadingPlan !== null || currentPlan === 'basic'}
+              disabled={currentPlan === 'basic' || !checkoutAvailable('basic')}
               className="w-full py-2.5 px-4 rounded-xl text-xs font-bold border border-[#e5e5e5] bg-[#faf5e8] text-[#0a0a0a] hover:bg-[#f5f0e0] disabled:opacity-50 transition"
             >
-              {loadingPlan === 'basic' ? 'Ativando...' : currentPlan === 'basic' ? 'Plano Ativo' : 'Escolher Básico (R$ 38)'}
+              {currentPlan === 'basic' ? 'Plano Ativo' : checkoutAvailable('basic') ? 'Escolher Básico (R$ 38)' : 'Checkout indisponível'}
             </button>
           </div>
 
@@ -196,10 +170,10 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
             <button
               onClick={() => handleSelectPlan('intermediate')}
-              disabled={loadingPlan !== null || currentPlan === 'intermediate'}
+              disabled={currentPlan === 'intermediate' || !checkoutAvailable('intermediate')}
               className="w-full py-2.5 px-4 rounded-xl text-xs font-bold border border-[#e5e5e5] bg-[#fffaf0] text-[#0a0a0a] hover:bg-white disabled:opacity-50 transition"
             >
-              {loadingPlan === 'intermediate' ? 'Ativando...' : currentPlan === 'intermediate' ? 'Plano Ativo' : 'Escolher Intermediário (R$ 47)'}
+              {currentPlan === 'intermediate' ? 'Plano Ativo' : checkoutAvailable('intermediate') ? 'Escolher Intermediário (R$ 47)' : 'Checkout indisponível'}
             </button>
           </div>
 
@@ -250,10 +224,10 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
             <button
               onClick={() => handleSelectPlan('pro')}
-              disabled={loadingPlan !== null || currentPlan === 'pro'}
+              disabled={currentPlan === 'pro' || !checkoutAvailable('pro')}
               className="w-full py-3 px-4 rounded-xl text-xs font-black bg-[#fffaf0] hover:bg-white text-[#0a0a0a] shadow-md disabled:opacity-50 transition"
             >
-              {loadingPlan === 'pro' ? 'Ativando...' : currentPlan === 'pro' ? 'Plano Ativo' : 'Garantir Pro Ilimitado (R$ 59)'}
+              {currentPlan === 'pro' ? 'Plano Ativo' : checkoutAvailable('pro') ? 'Garantir Pro Ilimitado (R$ 59)' : 'Checkout indisponível'}
             </button>
           </div>
         </div>

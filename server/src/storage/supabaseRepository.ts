@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { randomUUID } from 'node:crypto';
 import { IRepository } from './repository.js';
 import {
   Proposal,
@@ -7,16 +8,19 @@ import {
   UserSubscription,
   User,
   StoredUser,
-  AuthResponse
+  AuthResponse,
+  ProposalApprovalContext
 } from '../types/domain.js';
 import { PLANS_CONFIG } from './jsonRepository.js';
 import {
   hashPassword,
   verifyPassword,
   generateSessionToken,
+  hashSessionToken,
   isValidEmail,
   validatePassword
 } from '../utils/auth.js';
+import { generatePublicProposalToken, hashProposalContent } from '../utils/proposalSecurity.js';
 
 export class SupabaseRepository implements IRepository {
   private client: SupabaseClient;
@@ -25,6 +29,41 @@ export class SupabaseRepository implements IRepository {
     this.client = createClient(supabaseUrl, supabaseKey, {
       auth: { persistSession: false },
     });
+  }
+
+  async checkConnection(): Promise<void> {
+    const { error } = await this.client.from('users').select('id').limit(1);
+    if (error) throw new Error(`Falha ao conectar ao Supabase: ${error.message}`);
+  }
+
+  async claimWebhookEvent(eventId: string): Promise<'claimed' | 'processed' | 'processing'> {
+    const { error } = await this.client.from('webhook_events').insert({ event_id: eventId, status: 'PROCESSING' });
+    if (!error) return 'claimed';
+    if (error.code !== '23505') throw new Error(`Falha ao registrar evento webhook: ${error.message}`);
+    const { data, error: readError } = await this.client.from('webhook_events').select('status, updated_at').eq('event_id', eventId).maybeSingle();
+    if (readError) throw new Error(`Falha ao consultar evento webhook: ${readError.message}`);
+    if (data?.status === 'PROCESSED') return 'processed';
+    if (!data || new Date(data.updated_at).getTime() >= Date.now() - 5 * 60 * 1000) return 'processing';
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: reclaimed, error: reclaimError } = await this.client.from('webhook_events')
+      .update({ status: 'PROCESSING', updated_at: new Date().toISOString() })
+      .eq('event_id', eventId)
+      .eq('status', 'PROCESSING')
+      .lt('updated_at', cutoff)
+      .select('event_id')
+      .maybeSingle();
+    if (reclaimError) throw new Error(`Falha ao recuperar evento webhook: ${reclaimError.message}`);
+    return reclaimed ? 'claimed' : 'processing';
+  }
+
+  async completeWebhookEvent(eventId: string): Promise<void> {
+    const { error } = await this.client.from('webhook_events').update({ status: 'PROCESSED', updated_at: new Date().toISOString() }).eq('event_id', eventId);
+    if (error) throw new Error(`Falha ao concluir evento webhook: ${error.message}`);
+  }
+
+  async releaseWebhookEvent(eventId: string): Promise<void> {
+    const { error } = await this.client.from('webhook_events').delete().eq('event_id', eventId).eq('status', 'PROCESSING');
+    if (error) throw new Error(`Falha ao liberar evento webhook: ${error.message}`);
   }
 
   // --- USUÁRIOS E AUTENTICAÇÃO ---
@@ -47,8 +86,8 @@ export class SupabaseRepository implements IRepository {
       throw new Error('Este e-mail já está cadastrado.');
     }
 
-    const { hash, salt } = hashPassword(password);
-    const userId = `usr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const { hash, salt } = await hashPassword(password);
+    const userId = randomUUID();
     const now = new Date().toISOString();
 
     const { error: insertUserError } = await this.client.from('users').insert({
@@ -68,27 +107,20 @@ export class SupabaseRepository implements IRepository {
     const userProfile: ProviderProfile = {
       companyName: `${name.trim()} Pinturas & Acabamentos`,
       contactName: name.trim(),
-      phones: ['(11) 99999-9999'],
-      address: 'Atendimento em toda a região',
+      phones: [],
+      address: '',
     };
     await this.updateProfile(userProfile, userId);
 
     // Criar sessão de 30 dias
     const token = generateSessionToken();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     await this.client.from('sessions').insert({
-      token,
+      token: hashSessionToken(token),
       user_id: userId,
       created_at: now,
       expires_at: expiresAt,
     });
-
-    // Se houver compra pendente da Kiwify, ativa automaticamente
-    const pendingPlan = await this.getPendingUpgrade(cleanEmail);
-    if (pendingPlan) {
-      await this.upgradeSubscription(pendingPlan, userId);
-      await this.removePendingUpgrade(cleanEmail);
-    }
 
     const subscription = await this.getSubscription(userId);
 
@@ -118,17 +150,17 @@ export class SupabaseRepository implements IRepository {
       throw new Error('E-mail ou senha incorretos.');
     }
 
-    const passwordMatch = verifyPassword(password, user.passwordHash, user.salt);
+    const passwordMatch = await verifyPassword(password, user.passwordHash, user.salt);
     if (!passwordMatch) {
       throw new Error('E-mail ou senha incorretos.');
     }
 
     const token = generateSessionToken();
     const now = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
     await this.client.from('sessions').insert({
-      token,
+      token: hashSessionToken(token),
       user_id: user.id,
       created_at: now,
       expires_at: expiresAt,
@@ -158,7 +190,7 @@ export class SupabaseRepository implements IRepository {
     const { data: session, error } = await this.client
       .from('sessions')
       .select('token, user_id, expires_at')
-      .eq('token', token)
+      .eq('token', hashSessionToken(token))
       .maybeSingle();
 
     if (error || !session) return undefined;
@@ -172,7 +204,7 @@ export class SupabaseRepository implements IRepository {
   }
 
   async deleteSession(token: string): Promise<boolean> {
-    const { error } = await this.client.from('sessions').delete().eq('token', token);
+    const { error } = await this.client.from('sessions').delete().eq('token', hashSessionToken(token));
     return !error;
   }
 
@@ -278,8 +310,8 @@ export class SupabaseRepository implements IRepository {
     const defaultProfile: ProviderProfile = {
       companyName: 'Pintura & Acabamentos Residenciais',
       contactName: 'Profissional da Pintura',
-      phones: ['(11) 99999-9999'],
-      address: 'Atendimento em toda a região',
+      phones: [],
+      address: '',
       pixKey: '',
     };
 
@@ -323,51 +355,51 @@ export class SupabaseRepository implements IRepository {
 
   // --- PROPOSTAS ---
 
-  async listProposals(userId?: string): Promise<Proposal[]> {
-    let query = this.client.from('proposals').select('*').order('created_at', { ascending: false });
-    if (userId) {
-      query = query.eq('user_id', userId);
-    }
-
-    const { data, error } = await query;
+  async listProposals(userId: string): Promise<Proposal[]> {
+    const { data, error } = await this.client
+      .from('proposals')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
     if (error || !data) return [];
 
     return data.map((row) => this.mapProposalRow(row));
   }
 
-  async getProposalById(id: string, userId?: string): Promise<Proposal | undefined> {
+  async getProposalById(id: string, userId: string): Promise<Proposal | undefined> {
     const { data, error } = await this.client
       .from('proposals')
       .select('*')
       .eq('id', id)
+      .eq('user_id', userId)
       .maybeSingle();
 
     if (error || !data) return undefined;
-    const proposal = this.mapProposalRow(data);
-
-    if (userId && proposal.userId !== userId) {
-      return undefined;
-    }
-    return proposal;
+    return this.mapProposalRow(data);
   }
 
-  async saveProposal(proposal: Proposal, userId?: string): Promise<Proposal> {
-    const existing = await this.getProposalById(proposal.id);
+  async getPublicProposalByToken(token: string): Promise<Proposal | undefined> {
+    const { data, error } = await this.client.from('proposals').select('*').eq('public_token', token).maybeSingle();
+    if (error || !data) return undefined;
+    return this.mapProposalRow(data);
+  }
+
+  async saveProposal(proposal: Proposal, userId: string): Promise<Proposal> {
+    const id = proposal.id || randomUUID();
+    const existing = await this.getProposalById(id, userId);
     const now = new Date().toISOString();
 
-    const { count } = await this.client.from('proposals').select('*', { count: 'exact', head: true });
+    const { count } = await this.client.from('proposals').select('*', { count: 'exact', head: true }).eq('user_id', userId);
     const totalCount = count || 0;
 
-    const targetUserId = userId || proposal.userId || existing?.userId;
+    const targetUserId = userId;
+    const publicToken = existing?.publicToken || proposal.publicToken || generatePublicProposalToken();
     const proposalNumber = proposal.proposalNumber || existing?.proposalNumber || this.generateNumber(totalCount + 1);
 
-    if (existing && userId && existing.userId && existing.userId !== userId) {
-      throw new Error('Não autorizado a alterar proposta de outro usuário.');
-    }
-
     const rowData = {
-      id: proposal.id,
+      id,
       user_id: targetUserId || null,
+      public_token: publicToken,
       proposal_number: proposalNumber,
       status: proposal.status || 'DRAFT',
       client: proposal.client,
@@ -379,40 +411,44 @@ export class SupabaseRepository implements IRepository {
       approved_at: proposal.approvedAt ? new Date(proposal.approvedAt).toISOString() : null,
       signer_name: proposal.signerName || null,
       signature: proposal.signature || null,
+      signer_ip: proposal.signerIp || null,
+      signer_user_agent: proposal.signerUserAgent || null,
+      signed_content_hash: proposal.signedContentHash || null,
       created_at: existing ? existing.createdAt : (proposal.createdAt || now),
       updated_at: now,
     };
 
-    const { error } = await this.client.from('proposals').upsert(rowData);
+    if (existing?.status === 'APPROVED') throw new Error('PROPOSAL_ALREADY_APPROVED');
+    const result = existing
+      ? await this.client.from('proposals').update(rowData).eq('id', id).eq('user_id', userId).neq('status', 'APPROVED').select('id')
+      : await this.client.from('proposals').insert(rowData);
+    const { error } = result;
     if (error) {
       throw new Error(`Falha ao salvar proposta: ${error.message}`);
     }
+    if (existing && !result.data?.length) throw new Error('PROPOSAL_ALREADY_APPROVED');
 
-    const saved = await this.getProposalById(proposal.id);
+    const saved = await this.getProposalById(id, userId);
     return saved || proposal;
   }
 
-  async deleteProposal(id: string, userId?: string): Promise<boolean> {
-    const existing = await this.getProposalById(id);
-    if (!existing) return false;
-    if (userId && existing.userId && existing.userId !== userId) {
-      return false;
-    }
-    const { error } = await this.client.from('proposals').delete().eq('id', id);
-    return !error;
+  async deleteProposal(id: string, userId: string): Promise<boolean> {
+    const { data, error } = await this.client.from('proposals').delete().eq('id', id).eq('user_id', userId).select('id');
+    return !error && Boolean(data?.length);
   }
 
-  async duplicateProposal(id: string, newClientName?: string, userId?: string): Promise<Proposal | undefined> {
+  async duplicateProposal(id: string, newClientName: string | undefined, userId: string): Promise<Proposal | undefined> {
     const original = await this.getProposalById(id, userId);
     if (!original) return undefined;
 
-    const { count } = await this.client.from('proposals').select('*', { count: 'exact', head: true });
+    const { count } = await this.client.from('proposals').select('*', { count: 'exact', head: true }).eq('user_id', userId);
     const totalCount = count || 0;
 
     const duplicated: Proposal = {
       ...original,
-      id: `prop-${Date.now()}`,
-      userId: userId || original.userId,
+      id: randomUUID(),
+      userId,
+      publicToken: generatePublicProposalToken(),
       proposalNumber: this.generateNumber(totalCount + 1),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -431,9 +467,9 @@ export class SupabaseRepository implements IRepository {
     return this.saveProposal(duplicated, userId);
   }
 
-  async trackView(id: string): Promise<Proposal | undefined> {
-    const proposal = await this.getProposalById(id);
-    if (!proposal) return undefined;
+  async trackViewByPublicToken(token: string): Promise<Proposal | undefined> {
+    const proposal = await this.getPublicProposalByToken(token);
+    if (!proposal?.userId) return undefined;
 
     proposal.viewCount = (proposal.viewCount || 0) + 1;
     proposal.viewedAt = new Date().toISOString();
@@ -443,7 +479,7 @@ export class SupabaseRepository implements IRepository {
     return this.saveProposal(proposal, proposal.userId);
   }
 
-  async approveProposal(id: string, signerName: string, signature: string): Promise<Proposal | undefined> {
+  async approveProposalByPublicToken(token: string, signerName: string, signature: string, context: ProposalApprovalContext): Promise<Proposal | undefined> {
     if (!signerName || typeof signerName !== 'string' || signerName.trim().length < 2) {
       throw new Error('Nome do signatário inválido (mínimo de 2 caracteres).');
     }
@@ -461,14 +497,23 @@ export class SupabaseRepository implements IRepository {
       throw new Error('Tamanho da assinatura digital excede o limite máximo permitido (500 KB).');
     }
 
-    const proposal = await this.getProposalById(id);
+    const proposal = await this.getPublicProposalByToken(token);
     if (!proposal) return undefined;
-
-    proposal.status = 'APPROVED';
-    proposal.approvedAt = new Date().toISOString();
-    proposal.signerName = signerName.trim();
-    proposal.signature = signature;
-    return this.saveProposal(proposal, proposal.userId);
+    if (proposal.status !== 'SENT' || !proposal.userId) throw new Error('PROPOSAL_NOT_APPROVABLE');
+    const contentHash = hashProposalContent(proposal);
+    const approvedAt = new Date().toISOString();
+    const { data, error } = await this.client.from('proposals').update({
+      status: 'APPROVED',
+      approved_at: approvedAt,
+      signer_name: signerName.trim(),
+      signature,
+      signer_ip: context.ip || null,
+      signer_user_agent: context.userAgent || null,
+      signed_content_hash: contentHash,
+      updated_at: approvedAt,
+    }).eq('public_token', token).eq('user_id', proposal.userId).eq('status', 'SENT').select('*').maybeSingle();
+    if (error || !data) throw new Error('PROPOSAL_NOT_APPROVABLE');
+    return this.mapProposalRow(data);
   }
 
   // --- ASSINATURAS E QUOTAS ---
@@ -501,7 +546,7 @@ export class SupabaseRepository implements IRepository {
     }
 
     const config = PLANS_CONFIG[planId] || PLANS_CONFIG.free;
-    const proposals = await this.listProposals(userId);
+    const proposals = userId ? await this.listProposals(userId) : [];
 
     let usedCount = 0;
     if (planId === 'free') {
@@ -521,7 +566,7 @@ export class SupabaseRepository implements IRepository {
     };
   }
 
-  async checkQuota(userId?: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }> {
+  async checkQuota(userId: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }> {
     const sub = await this.getSubscription(userId);
     if (sub.monthlyLimit !== -1 && sub.usedProposalsCount >= sub.monthlyLimit) {
       const planName = PLANS_CONFIG[sub.planId]?.name || sub.planId;
@@ -576,6 +621,10 @@ export class SupabaseRepository implements IRepository {
       approvedAt: row.approved_at || undefined,
       signerName: row.signer_name || undefined,
       signature: row.signature || undefined,
+      publicToken: row.public_token || undefined,
+      signerIp: row.signer_ip || undefined,
+      signerUserAgent: row.signer_user_agent || undefined,
+      signedContentHash: row.signed_content_hash || undefined,
       createdAt: row.created_at || new Date().toISOString(),
       updatedAt: row.updated_at || new Date().toISOString(),
     };

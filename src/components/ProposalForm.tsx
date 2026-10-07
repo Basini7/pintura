@@ -96,24 +96,19 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
   const [clientQuery, setClientQuery] = useState('');
   const [activeStep, setActiveStep] = useState<ProposalStep>(defaultStep);
 
-  const fallbackRecentClients: ClientInfo[] = [
-    { name: 'João da Silva', phone: '(11) 98888-1234', address: 'Rua das Flores, 230', city: 'São Paulo', propertyType: 'Casa' },
-    { name: 'Maria Souza', phone: '(11) 99777-4567', address: 'Av. Brasil, 540', city: 'Campinas', propertyType: 'Apartamento' },
-    { name: 'Condomínio Alpha', phone: '(21) 98888-1122', address: 'Estrada do Sol, 910', city: 'Rio de Janeiro', propertyType: 'Comercial' },
-  ];
   const recentClientsStorageKey = `pintura_recent_clients_${user?.id || 'guest'}`;
 
   const getStoredRecentClients = (): ClientInfo[] => {
-    if (typeof window === 'undefined') return fallbackRecentClients;
+    if (typeof window === 'undefined') return [];
 
     try {
       const raw = window.localStorage.getItem(recentClientsStorageKey);
-      if (!raw) return fallbackRecentClients;
+      if (!raw) return [];
 
       const parsed = JSON.parse(raw) as ClientInfo[];
-      return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallbackRecentClients;
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
-      return fallbackRecentClients;
+      return [];
     }
   };
 
@@ -468,11 +463,11 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
             <span>{saving ? 'Salvando...' : saveSuccess ? 'Salvo!' : 'Salvar'}</span>
           </button>
 
-          {proposal.id && (
+          {proposal.publicToken && (
             <button
               type="button"
               onClick={() => {
-                window.location.hash = `proposta=${proposal.id}`;
+                window.location.hash = `proposta=${proposal.publicToken}`;
               }}
               className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 shadow-sm transition-all"
               title="Visualizar Proposta Interativa como Cliente"
@@ -559,9 +554,9 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
                     />
                   </div>
 
-                  {filteredClients.length > 0 && (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Clientes recentes</p>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">Clientes recentes</p>
+                    {filteredClients.length > 0 ? (
                       <div className="mt-2 space-y-2">
                         {filteredClients.map((client) => (
                           <button
@@ -596,8 +591,10 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
                           </button>
                         ))}
                       </div>
-                    </div>
-                  )}
+                    ) : (
+                      <p className="mt-2 text-[11px] text-slate-500">Nenhum cliente salvo.</p>
+                    )}
+                  </div>
                 </div>
               </div>
 

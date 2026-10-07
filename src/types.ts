@@ -80,6 +80,7 @@ export interface PricingSummary {
 export interface Proposal {
   id: string;
   userId?: string;
+  publicToken?: string;
   proposalNumber: string;
   createdAt: string;
   updatedAt: string;
@@ -94,6 +95,11 @@ export interface Proposal {
   signature?: string;
   signerName?: string;
 }
+
+export type PublicProposalDTO = Pick<
+  Proposal,
+  'proposalNumber' | 'createdAt' | 'client' | 'areas' | 'pricing' | 'terms' | 'status' | 'viewedAt' | 'viewCount' | 'approvedAt' | 'signerName'
+>;
 
 export type PlanTier = 'free' | 'basic' | 'intermediate' | 'pro';
 
@@ -124,7 +130,7 @@ export interface User {
 
 export interface AuthResponse {
   user: User;
-  token: string;
+  token?: string;
   profile?: ProviderProfile;
   subscription?: UserSubscription;
 }

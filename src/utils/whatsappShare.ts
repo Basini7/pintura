@@ -59,8 +59,8 @@ export function generateWhatsAppMessage(proposal: Proposal, profile: ProviderPro
     lines.push(`🔑 *Chave PIX:* ${profile.pixKey}`);
   }
 
-  if (typeof window !== 'undefined' && proposal.id) {
-    const proposalUrl = `${window.location.origin}/#proposta=${proposal.id}`;
+  if (typeof window !== 'undefined' && proposal.publicToken) {
+    const proposalUrl = `${window.location.origin}/#proposta=${proposal.publicToken}`;
     lines.push(`\n🔗 *Acesse os detalhes online e aprove com 1 clique:*`);
     lines.push(proposalUrl);
   }

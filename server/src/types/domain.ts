@@ -77,6 +77,7 @@ export interface PricingSummary {
 export interface Proposal {
   id: string;
   userId?: string;
+  publicToken?: string;
   proposalNumber: string;
   createdAt: string;
   updatedAt: string;
@@ -90,6 +91,25 @@ export interface Proposal {
   approvedAt?: string;
   signature?: string;
   signerName?: string;
+  signerIp?: string;
+  signerUserAgent?: string;
+  signedContentHash?: string;
+}
+
+export type PublicProposalDTO = Pick<
+  Proposal,
+  'proposalNumber' | 'status' | 'client' | 'areas' | 'pricing' | 'terms' | 'viewCount' | 'viewedAt' | 'createdAt' | 'approvedAt' | 'signerName'
+>;
+
+export interface PublicProposalResponse {
+  proposal: PublicProposalDTO;
+  profile: ProviderProfile;
+  hasWatermark: boolean;
+}
+
+export interface ProposalApprovalContext {
+  ip?: string;
+  userAgent?: string;
 }
 
 export type PlanTier = 'free' | 'basic' | 'intermediate' | 'pro';

@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { Proposal, ProviderProfile, PlanTier, PlanConfig, UserSubscription, User, StoredUser, UserSession, AuthResponse } from '../types/domain.js';
-import { hashPassword, verifyPassword, generateSessionToken, isValidEmail, validatePassword } from '../utils/auth.js';
+import { randomUUID } from 'node:crypto';
+import { Proposal, ProposalApprovalContext, ProviderProfile, PlanTier, PlanConfig, UserSubscription, User, StoredUser, UserSession, AuthResponse } from '../types/domain.js';
+import { hashPassword, verifyPassword, generateSessionToken, hashSessionToken, isValidEmail, validatePassword } from '../utils/auth.js';
+import { generatePublicProposalToken, hashProposalContent } from '../utils/proposalSecurity.js';
 
 export const PLANS_CONFIG: Record<PlanTier, PlanConfig> = {
   free: {
@@ -56,6 +58,8 @@ export class JsonRepository implements IRepository {
   private profilesFile: string;
   private subscriptionsFile: string;
   private pendingUpgradesFile: string;
+  private approvalLock: Promise<void> = Promise.resolve();
+  private webhookEventLock: Promise<void> = Promise.resolve();
 
   constructor(customDataDir?: string) {
     this.dataDir = customDataDir || path.resolve(process.cwd(), 'data');
@@ -67,6 +71,50 @@ export class JsonRepository implements IRepository {
     this.profilesFile = path.join(this.dataDir, 'profiles.json');
     this.subscriptionsFile = path.join(this.dataDir, 'subscriptions.json');
     this.pendingUpgradesFile = path.join(this.dataDir, 'pending_upgrades.json');
+  }
+
+  async claimWebhookEvent(eventId: string): Promise<'claimed' | 'processed' | 'processing'> {
+    let releaseLock!: () => void;
+    const previous = this.webhookEventLock;
+    this.webhookEventLock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    await previous;
+    try {
+      await this.ensureDir();
+      const filePath = path.join(this.dataDir, 'webhook_events.json');
+      const events: Record<string, string> = await fs.readFile(filePath, 'utf-8')
+        .then((content) => JSON.parse(content) as Record<string, string>)
+        .catch(() => ({} as Record<string, string>));
+      if (events[eventId] === 'PROCESSED') return 'processed';
+      const processingStartedAt = Number(events[eventId]?.split(':')[1]);
+      if (events[eventId]?.startsWith('PROCESSING:') && Date.now() - processingStartedAt < 5 * 60 * 1000) {
+        return 'processing';
+      }
+      events[eventId] = `PROCESSING:${Date.now()}`;
+      await fs.writeFile(filePath, JSON.stringify(events, null, 2), 'utf-8');
+      return 'claimed';
+    } finally {
+      releaseLock();
+    }
+  }
+
+  async completeWebhookEvent(eventId: string): Promise<void> {
+    await this.ensureDir();
+    const filePath = path.join(this.dataDir, 'webhook_events.json');
+    const events: Record<string, string> = await fs.readFile(filePath, 'utf-8')
+      .then((content) => JSON.parse(content) as Record<string, string>)
+      .catch(() => ({} as Record<string, string>));
+    events[eventId] = 'PROCESSED';
+    await fs.writeFile(filePath, JSON.stringify(events, null, 2), 'utf-8');
+  }
+
+  async releaseWebhookEvent(eventId: string): Promise<void> {
+    await this.ensureDir();
+    const filePath = path.join(this.dataDir, 'webhook_events.json');
+    const events: Record<string, string> = await fs.readFile(filePath, 'utf-8')
+      .then((content) => JSON.parse(content) as Record<string, string>)
+      .catch(() => ({} as Record<string, string>));
+    delete events[eventId];
+    await fs.writeFile(filePath, JSON.stringify(events, null, 2), 'utf-8');
   }
 
   private async ensureDir(): Promise<void> {
@@ -123,8 +171,8 @@ export class JsonRepository implements IRepository {
       throw new Error('Este e-mail já está cadastrado.');
     }
 
-    const { hash, salt } = hashPassword(password);
-    const userId = `usr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const { hash, salt } = await hashPassword(password);
+    const userId = randomUUID();
     const now = new Date().toISOString();
 
     const newUser: StoredUser = {
@@ -143,29 +191,22 @@ export class JsonRepository implements IRepository {
     const userProfile: ProviderProfile = {
       companyName: `${name.trim()} Pinturas & Acabamentos`,
       contactName: name.trim(),
-      phones: ['(11) 99999-9999'],
-      address: 'Atendimento em toda a região',
+      phones: [],
+      address: '',
     };
     await this.updateProfile(userProfile, userId);
 
     // Criar sessão (válida por 30 dias)
     const token = generateSessionToken();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const sessions = await this.readSessions();
     sessions.push({
-      token,
+      token: hashSessionToken(token),
       userId,
       createdAt: now,
       expiresAt,
     });
     await this.writeSessions(sessions);
-
-    // Se houver um plano comprado na Kiwify antes do cadastro deste e-mail, ativa automaticamente
-    const pendingPlan = await this.getPendingUpgrade(cleanEmail);
-    if (pendingPlan) {
-      await this.upgradeSubscription(pendingPlan, userId);
-      await this.removePendingUpgrade(cleanEmail);
-    }
 
     const subscription = await this.getSubscription(userId);
 
@@ -196,7 +237,7 @@ export class JsonRepository implements IRepository {
       throw new Error('E-mail ou senha incorretos.');
     }
 
-    const passwordMatch = verifyPassword(password, user.passwordHash, user.salt);
+    const passwordMatch = await verifyPassword(password, user.passwordHash, user.salt);
     if (!passwordMatch) {
       throw new Error('E-mail ou senha incorretos.');
     }
@@ -204,10 +245,10 @@ export class JsonRepository implements IRepository {
     // Criar nova sessão
     const token = generateSessionToken();
     const now = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const sessions = await this.readSessions();
     sessions.push({
-      token,
+      token: hashSessionToken(token),
       userId: user.id,
       createdAt: now,
       expiresAt,
@@ -235,7 +276,8 @@ export class JsonRepository implements IRepository {
   async getUserByToken(token: string): Promise<User | undefined> {
     if (!token) return undefined;
     const sessions = await this.readSessions();
-    const session = sessions.find((s) => s.token === token);
+    const tokenHash = hashSessionToken(token);
+    const session = sessions.find((s) => s.token === tokenHash);
     if (!session) return undefined;
 
     // Verificar expiração
@@ -259,7 +301,8 @@ export class JsonRepository implements IRepository {
 
   async deleteSession(token: string): Promise<boolean> {
     const sessions = await this.readSessions();
-    const filtered = sessions.filter((s) => s.token !== token);
+    const tokenHash = hashSessionToken(token);
+    const filtered = sessions.filter((s) => s.token !== tokenHash);
     if (filtered.length === sessions.length) return false;
     await this.writeSessions(filtered);
     return true;
@@ -384,8 +427,8 @@ export class JsonRepository implements IRepository {
       const defaultProfile: ProviderProfile = {
         companyName: 'Pintura & Acabamentos Residenciais',
         contactName: 'Profissional da Pintura',
-        phones: ['(11) 99999-9999'],
-        address: 'Atendimento em toda a região',
+        phones: [],
+        address: '',
         pixKey: '',
       };
       await this.updateProfile(defaultProfile, userId);
@@ -406,50 +449,60 @@ export class JsonRepository implements IRepository {
   }
 
   // --- PROPOSALS ---
-  async listProposals(userId?: string): Promise<Proposal[]> {
+  async listProposals(userId: string): Promise<Proposal[]> {
     await this.ensureDir();
     try {
       const content = await fs.readFile(this.proposalsFile, 'utf-8');
       const list = JSON.parse(content) as Proposal[];
       const sorted = list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      if (userId) {
-        return sorted.filter((p) => p.userId === userId);
-      }
-      return sorted;
+      return sorted.filter((proposal) => proposal.userId === userId);
     } catch {
       return [];
     }
   }
 
-  async getProposalById(id: string, userId?: string): Promise<Proposal | undefined> {
-    const list = await this.listProposals();
+  async getProposalById(id: string, userId: string): Promise<Proposal | undefined> {
+    const list = await this.listProposals(userId);
     const proposal = list.find((p) => p.id === id);
-    if (!proposal) return undefined;
-    if (userId && proposal.userId !== userId) {
-      return undefined;
-    }
     return proposal;
   }
 
-  async saveProposal(proposal: Proposal, userId?: string): Promise<Proposal> {
+  async getPublicProposalByToken(token: string): Promise<Proposal | undefined> {
     await this.ensureDir();
-    const list = await this.listProposals();
-    const existingIndex = list.findIndex((p) => p.id === proposal.id);
+    try {
+      const content = await fs.readFile(this.proposalsFile, 'utf-8');
+      const list = JSON.parse(content) as Proposal[];
+      return list.find((proposal) => proposal.publicToken === token);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async saveProposal(proposal: Proposal, userId: string): Promise<Proposal> {
+    await this.ensureDir();
+    const content = await fs.readFile(this.proposalsFile, 'utf-8').catch(() => '[]');
+    const list = JSON.parse(content) as Proposal[];
+    const id = proposal.id || randomUUID();
+    const existingIndex = list.findIndex((item) => item.id === id && item.userId === userId);
+    if (list.some((item) => item.id === id && item.userId !== userId)) {
+      throw new Error('Não autorizado a alterar proposta de outro usuário.');
+    }
+    if (existingIndex >= 0 && list[existingIndex].status === 'APPROVED') {
+      throw new Error('PROPOSAL_ALREADY_APPROVED');
+    }
 
     const now = new Date().toISOString();
     const updatedProposal: Proposal = {
       ...proposal,
-      userId: userId || proposal.userId || (existingIndex >= 0 ? list[existingIndex].userId : undefined),
+      id,
+      userId,
+      publicToken: proposal.publicToken || generatePublicProposalToken(),
       updatedAt: now,
       createdAt: proposal.createdAt || now,
-      proposalNumber: proposal.proposalNumber || this.generateNumber(list.length + 1),
+      proposalNumber: proposal.proposalNumber || this.generateNumber(list.filter((item) => item.userId === userId).length + 1),
     };
 
     if (existingIndex >= 0) {
-      // Se for edição e um userId foi fornecido, garantir isolamento de tenant
-      if (userId && list[existingIndex].userId && list[existingIndex].userId !== userId) {
-        throw new Error('Não autorizado a alterar proposta de outro usuário.');
-      }
       list[existingIndex] = updatedProposal;
     } else {
       list.push(updatedProposal);
@@ -459,31 +512,28 @@ export class JsonRepository implements IRepository {
     return updatedProposal;
   }
 
-  async deleteProposal(id: string, userId?: string): Promise<boolean> {
+  async deleteProposal(id: string, userId: string): Promise<boolean> {
     await this.ensureDir();
-    const list = await this.listProposals();
-    const target = list.find((p) => p.id === id);
+    const content = await fs.readFile(this.proposalsFile, 'utf-8').catch(() => '[]');
+    const list = JSON.parse(content) as Proposal[];
+    const target = list.find((proposal) => proposal.id === id && proposal.userId === userId);
     if (!target) return false;
 
-    if (userId && target.userId && target.userId !== userId) {
-      return false;
-    }
-
-    const filtered = list.filter((p) => p.id !== id);
+    const filtered = list.filter((proposal) => proposal.id !== id || proposal.userId !== userId);
     await fs.writeFile(this.proposalsFile, JSON.stringify(filtered, null, 2), 'utf-8');
     return true;
   }
 
-  async duplicateProposal(id: string, newClientName?: string, userId?: string): Promise<Proposal | undefined> {
+  async duplicateProposal(id: string, newClientName: string | undefined, userId: string): Promise<Proposal | undefined> {
     const original = await this.getProposalById(id, userId);
     if (!original) return undefined;
 
-    const list = await this.listProposals();
-    const newId = `prop-${Date.now()}`;
+    const list = await this.listProposals(userId);
     const duplicated: Proposal = {
       ...original,
-      id: newId,
-      userId: userId || original.userId,
+      id: randomUUID(),
+      userId,
+      publicToken: generatePublicProposalToken(),
       proposalNumber: this.generateNumber(list.length + 1),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -497,9 +547,9 @@ export class JsonRepository implements IRepository {
     return this.saveProposal(duplicated, userId);
   }
 
-  async trackView(id: string): Promise<Proposal | undefined> {
-    const proposal = await this.getProposalById(id);
-    if (!proposal) return undefined;
+  async trackViewByPublicToken(token: string): Promise<Proposal | undefined> {
+    const proposal = await this.getPublicProposalByToken(token);
+    if (!proposal?.userId) return undefined;
 
     proposal.viewCount = (proposal.viewCount || 0) + 1;
     proposal.viewedAt = new Date().toISOString();
@@ -509,7 +559,20 @@ export class JsonRepository implements IRepository {
     return this.saveProposal(proposal, proposal.userId);
   }
 
-  async approveProposal(id: string, signerName: string, signature: string): Promise<Proposal | undefined> {
+  async approveProposalByPublicToken(
+    token: string,
+    signerName: string,
+    signature: string,
+    context: ProposalApprovalContext
+  ): Promise<Proposal | undefined> {
+    let releaseLock!: () => void;
+    const previousApproval = this.approvalLock;
+    this.approvalLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    await previousApproval;
+
+    try {
     // Validação estrita de segurança da assinatura
     if (!signerName || typeof signerName !== 'string' || signerName.trim().length < 2) {
       throw new Error('Nome do signatário inválido (mínimo de 2 caracteres).');
@@ -530,14 +593,39 @@ export class JsonRepository implements IRepository {
       throw new Error('Tamanho da assinatura digital excede o limite máximo permitido (500 KB).');
     }
 
-    const proposal = await this.getProposalById(id);
+    const proposal = await this.getPublicProposalByToken(token);
     if (!proposal) return undefined;
+    if (proposal.status !== 'SENT' || !proposal.userId) {
+      throw new Error('PROPOSAL_NOT_APPROVABLE');
+    }
 
+    const proposals = await this.listAllProposals();
+    const current = proposals.find((item) => item.id === proposal.id && item.userId === proposal.userId);
+    if (!current || current.status !== 'SENT') {
+      throw new Error('PROPOSAL_NOT_APPROVABLE');
+    }
+
+    const contentHash = hashProposalContent(current);
     proposal.status = 'APPROVED';
     proposal.approvedAt = new Date().toISOString();
     proposal.signerName = signerName.trim();
     proposal.signature = signature;
+    proposal.signerIp = context.ip;
+    proposal.signerUserAgent = context.userAgent;
+    proposal.signedContentHash = contentHash;
     return this.saveProposal(proposal, proposal.userId);
+    } finally {
+      releaseLock();
+    }
+  }
+
+  private async listAllProposals(): Promise<Proposal[]> {
+    await this.ensureDir();
+    try {
+      return JSON.parse(await fs.readFile(this.proposalsFile, 'utf-8')) as Proposal[];
+    } catch {
+      return [];
+    }
   }
 
   // --- SUBSCRIPTIONS & QUOTA ENFORCEMENT ---
@@ -588,7 +676,7 @@ export class JsonRepository implements IRepository {
     }
 
     const config = PLANS_CONFIG[stored.planId] || PLANS_CONFIG.free;
-    const proposals = await this.listProposals(userId);
+    const proposals = userId ? await this.listProposals(userId) : [];
 
     let usedCount = 0;
     if (stored.planId === 'free') {
@@ -608,7 +696,7 @@ export class JsonRepository implements IRepository {
     };
   }
 
-  async checkQuota(userId?: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }> {
+  async checkQuota(userId: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }> {
     const sub = await this.getSubscription(userId);
     if (sub.monthlyLimit !== -1 && sub.usedProposalsCount >= sub.monthlyLimit) {
       const planName = PLANS_CONFIG[sub.planId]?.name || sub.planId;

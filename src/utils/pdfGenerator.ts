@@ -1,7 +1,9 @@
 import { jsPDF } from 'jspdf';
 import { Proposal, ProviderProfile } from '../types.js';
 
-export function generateProposalPDF(proposal: Proposal, profile: ProviderProfile, hasWatermark: boolean = true): void {
+type ProposalDocumentData = Pick<Proposal, 'proposalNumber' | 'createdAt' | 'client' | 'areas' | 'pricing' | 'terms' | 'status' | 'approvedAt' | 'signerName'>;
+
+export function generateProposalPDF(proposal: ProposalDocumentData, profile: ProviderProfile, hasWatermark: boolean = true): void {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',

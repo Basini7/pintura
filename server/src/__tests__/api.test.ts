@@ -10,11 +10,18 @@ describe('API Endpoints REST E2E (TASK-005)', () => {
   let tempDir: string;
   let repo: JsonRepository;
   let app: ReturnType<typeof createApp>;
+  let authToken: string;
+  let userId: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pintura-api-test-'));
     repo = new JsonRepository(tempDir);
     app = createApp(repo);
+    const registration = await request(app)
+      .post('/api/auth/register')
+      .send({ name: 'Pintor API', email: `api-${Date.now()}@test.com`, password: 'senhaValida123' });
+    authToken = registration.headers['set-cookie'][0].split(';')[0];
+    userId = registration.body.user.id;
   });
 
   afterEach(async () => {
@@ -63,13 +70,26 @@ describe('API Endpoints REST E2E (TASK-005)', () => {
     expect(res.body.schedule[0].amount).toBe(8100);
   });
 
+  it('POST /api/pricing/calculate deve rejeitar valores negativos e descontos acima de 100%', async () => {
+    const negativePrice = await request(app)
+      .post('/api/pricing/calculate')
+      .send({ mode: 'GLOBAL', globalAmount: -1 });
+    const excessiveDiscount = await request(app)
+      .post('/api/pricing/calculate')
+      .send({ mode: 'GLOBAL', globalAmount: 1000, discountPercent: 101 });
+
+    expect(negativePrice.status).toBe(400);
+    expect(excessiveDiscount.status).toBe(400);
+  });
+
   it('GET e PUT /api/profile deve gerenciar perfil do prestador', async () => {
-    const getRes = await request(app).get('/api/profile');
+    const getRes = await request(app).get('/api/profile').set('Cookie', authToken);
     expect(getRes.status).toBe(200);
     expect(getRes.body.companyName).toBeDefined();
 
     const putRes = await request(app)
       .put('/api/profile')
+      .set('Cookie', authToken)
       .send({
         companyName: 'Pinturas & Reformas Express',
         phones: ['(11) 98888-7777'],
@@ -85,6 +105,7 @@ describe('API Endpoints REST E2E (TASK-005)', () => {
     // 1. Criar proposta
     const createRes = await request(app)
       .post('/api/proposals')
+      .set('Cookie', authToken)
       .send({
         id: 'prop-100',
         client: {
@@ -119,41 +140,44 @@ describe('API Endpoints REST E2E (TASK-005)', () => {
     expect(createRes.body.proposalNumber).toContain('PROP-');
 
     // 2. Listar
-    const listRes = await request(app).get('/api/proposals');
+    const proposalId = createRes.body.id;
+    const listRes = await request(app).get('/api/proposals').set('Cookie', authToken);
     expect(listRes.status).toBe(200);
     expect(listRes.body).toHaveLength(1);
 
     // 3. Obter por ID
-    const getRes = await request(app).get('/api/proposals/prop-100');
+    const getRes = await request(app).get(`/api/proposals/${proposalId}`).set('Cookie', authToken);
     expect(getRes.status).toBe(200);
     expect(getRes.body.client.name).toBe('João da Silva');
 
     // 4. Upgrade de plano para permitir múltiplas propostas e duplicar
-    await request(app).post('/api/subscription/upgrade').send({ planId: 'basic' });
+    await repo.upgradeSubscription('basic', userId);
 
     const dupRes = await request(app)
-      .post('/api/proposals/prop-100/duplicate')
+      .post(`/api/proposals/${proposalId}/duplicate`)
+      .set('Cookie', authToken)
       .send({ newClientName: 'Maria Silva' });
 
     expect(dupRes.status).toBe(201);
     expect(dupRes.body.client.name).toBe('Maria Silva');
 
-    const listAfterDup = await request(app).get('/api/proposals');
+    const listAfterDup = await request(app).get('/api/proposals').set('Cookie', authToken);
     expect(listAfterDup.body).toHaveLength(2);
 
     // 5. Deletar
-    const delRes = await request(app).delete('/api/proposals/prop-100');
+    const delRes = await request(app).delete(`/api/proposals/${proposalId}`).set('Cookie', authToken);
     expect(delRes.status).toBe(200);
 
-    const listFinal = await request(app).get('/api/proposals');
+    const listFinal = await request(app).get('/api/proposals').set('Cookie', authToken);
     expect(listFinal.body).toHaveLength(1);
     expect(listFinal.body[0].client.name).toBe('Maria Silva');
   });
 
   it('Rastreamento de visualizações e aprovação com assinatura digital', async () => {
     // 1. Criar proposta
-    await request(app)
+    const created = await request(app)
       .post('/api/proposals')
+      .set('Cookie', authToken)
       .send({
         id: 'prop-track-1',
         client: { name: 'Carlos Oliveira', address: 'Av. Brasil, 120' },
@@ -164,34 +188,35 @@ describe('API Endpoints REST E2E (TASK-005)', () => {
       });
 
     // 2. Registrar visualização
-    const viewRes1 = await request(app).post('/api/proposals/prop-track-1/view');
+    const publicPath = `/api/public/proposals/${created.body.publicToken}`;
+    const viewRes1 = await request(app).post(`${publicPath}/view`);
     expect(viewRes1.status).toBe(200);
     expect(viewRes1.body.viewCount).toBe(1);
     expect(viewRes1.body.viewedAt).toBeDefined();
     expect(viewRes1.body.status).toBe('SENT');
 
     // 3. Segunda visualização incrementa contador
-    const viewRes2 = await request(app).post('/api/proposals/prop-track-1/view');
+    const viewRes2 = await request(app).post(`${publicPath}/view`);
     expect(viewRes2.status).toBe(200);
     expect(viewRes2.body.viewCount).toBe(2);
 
     // 4. Aprovação com assinatura digital
     const approveRes = await request(app)
-      .post('/api/proposals/prop-track-1/approve')
+      .post(`${publicPath}/approve`)
       .send({
         signerName: 'Carlos Oliveira',
-        signature: 'data:image/png;base64,mockSignatureData',
+        signature: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
       });
 
     expect(approveRes.status).toBe(200);
     expect(approveRes.body.status).toBe('APPROVED');
     expect(approveRes.body.signerName).toBe('Carlos Oliveira');
-    expect(approveRes.body.signature).toBe('data:image/png;base64,mockSignatureData');
+    expect(approveRes.body).not.toHaveProperty('signature');
     expect(approveRes.body.approvedAt).toBeDefined();
 
     // 5. Validar erro se faltar dados de assinatura
     const badApprove = await request(app)
-      .post('/api/proposals/prop-track-1/approve')
+      .post(`${publicPath}/approve`)
       .send({ signerName: '' });
     expect(badApprove.status).toBe(400);
   });

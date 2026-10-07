@@ -1,5 +1,6 @@
 import {
   Proposal,
+  ProposalApprovalContext,
   ProviderProfile,
   PlanTier,
   UserSubscription,
@@ -9,6 +10,10 @@ import {
 } from '../types/domain.js';
 
 export interface IRepository {
+  claimWebhookEvent(eventId: string): Promise<'claimed' | 'processed' | 'processing'>;
+  completeWebhookEvent(eventId: string): Promise<void>;
+  releaseWebhookEvent(eventId: string): Promise<void>;
+
   // Usuários e Autenticação
   registerUser(name: string, email: string, password: string): Promise<AuthResponse>;
   loginUser(email: string, password: string): Promise<AuthResponse>;
@@ -29,16 +34,22 @@ export interface IRepository {
   updateProfile(profile: ProviderProfile, userId?: string): Promise<ProviderProfile>;
 
   // Orçamentos e Propostas
-  listProposals(userId?: string): Promise<Proposal[]>;
-  getProposalById(id: string, userId?: string): Promise<Proposal | undefined>;
-  saveProposal(proposal: Proposal, userId?: string): Promise<Proposal>;
-  deleteProposal(id: string, userId?: string): Promise<boolean>;
-  duplicateProposal(id: string, newClientName?: string, userId?: string): Promise<Proposal | undefined>;
-  trackView(id: string): Promise<Proposal | undefined>;
-  approveProposal(id: string, signerName: string, signature: string): Promise<Proposal | undefined>;
+  listProposals(userId: string): Promise<Proposal[]>;
+  getProposalById(id: string, userId: string): Promise<Proposal | undefined>;
+  getPublicProposalByToken(token: string): Promise<Proposal | undefined>;
+  saveProposal(proposal: Proposal, userId: string): Promise<Proposal>;
+  deleteProposal(id: string, userId: string): Promise<boolean>;
+  duplicateProposal(id: string, newClientName: string | undefined, userId: string): Promise<Proposal | undefined>;
+  trackViewByPublicToken(token: string): Promise<Proposal | undefined>;
+  approveProposalByPublicToken(
+    token: string,
+    signerName: string,
+    signature: string,
+    context: ProposalApprovalContext
+  ): Promise<Proposal | undefined>;
 
   // Assinaturas e Quota
   getSubscription(userId?: string): Promise<UserSubscription>;
-  checkQuota(userId?: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }>;
+  checkQuota(userId: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }>;
   upgradeSubscription(newPlanId: PlanTier, userId?: string): Promise<UserSubscription>;
 }

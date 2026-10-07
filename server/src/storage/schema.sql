@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS profiles (
 -- 4. Tabela de Propostas / Orçamentos
 CREATE TABLE IF NOT EXISTS proposals (
   id VARCHAR(64) PRIMARY KEY,
-  user_id VARCHAR(64) REFERENCES users(id) ON DELETE CASCADE,
+  user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  public_token VARCHAR(128) UNIQUE,
   proposal_number VARCHAR(64) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
   client JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -52,12 +53,20 @@ CREATE TABLE IF NOT EXISTS proposals (
   approved_at TIMESTAMPTZ,
   signer_name VARCHAR(255),
   signature TEXT,
+  signer_ip VARCHAR(128),
+  signer_user_agent TEXT,
+  signed_content_hash VARCHAR(64),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposals_user_id ON proposals(user_id);
 CREATE INDEX IF NOT EXISTS idx_proposals_created_at ON proposals(created_at DESC);
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS public_token VARCHAR(128);
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS signer_ip VARCHAR(128);
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS signer_user_agent TEXT;
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS signed_content_hash VARCHAR(64);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_public_token ON proposals(public_token) WHERE public_token IS NOT NULL;
 
 -- 5. Tabela de Assinaturas (Planos Básico, Intermediário e Pro)
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -74,6 +83,21 @@ CREATE TABLE IF NOT EXISTS pending_upgrades (
   plan_id VARCHAR(32) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE proposals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pending_upgrades ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS webhook_events (
+  event_id VARCHAR(128) PRIMARY KEY,
+  status VARCHAR(16) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE webhook_events ENABLE ROW LEVEL SECURITY;
 
 -- ==============================================================================
 -- Fim do Schema

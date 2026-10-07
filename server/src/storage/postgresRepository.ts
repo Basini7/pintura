@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 import { IRepository } from './repository.js';
 import {
   Proposal,
@@ -7,16 +8,19 @@ import {
   UserSubscription,
   User,
   StoredUser,
-  AuthResponse
+  AuthResponse,
+  ProposalApprovalContext
 } from '../types/domain.js';
 import { PLANS_CONFIG } from './jsonRepository.js';
 import {
   hashPassword,
   verifyPassword,
   generateSessionToken,
+  hashSessionToken,
   isValidEmail,
   validatePassword
 } from '../utils/auth.js';
+import { generatePublicProposalToken, hashProposalContent } from '../utils/proposalSecurity.js';
 
 const { Pool } = pg;
 
@@ -89,9 +93,18 @@ export class PostgresRepository implements IRepository {
           approved_at TIMESTAMPTZ,
           signer_name VARCHAR(255),
           signature TEXT,
+          public_token VARCHAR(128) UNIQUE,
+          signer_ip VARCHAR(128),
+          signer_user_agent TEXT,
+          signed_content_hash VARCHAR(64),
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        ALTER TABLE proposals ADD COLUMN IF NOT EXISTS public_token VARCHAR(128) UNIQUE;
+        ALTER TABLE proposals ADD COLUMN IF NOT EXISTS signer_ip VARCHAR(128);
+        ALTER TABLE proposals ADD COLUMN IF NOT EXISTS signer_user_agent TEXT;
+        ALTER TABLE proposals ADD COLUMN IF NOT EXISTS signed_content_hash VARCHAR(64);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_proposals_public_token ON proposals(public_token) WHERE public_token IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_proposals_user_id ON proposals(user_id);
         CREATE INDEX IF NOT EXISTS idx_proposals_created_at ON proposals(created_at DESC);
 
@@ -107,6 +120,13 @@ export class PostgresRepository implements IRepository {
           email VARCHAR(255) PRIMARY KEY,
           plan_id VARCHAR(32) NOT NULL,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS webhook_events (
+          event_id VARCHAR(128) PRIMARY KEY,
+          status VARCHAR(16) NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
     } finally {
@@ -134,8 +154,8 @@ export class PostgresRepository implements IRepository {
       throw new Error('Este e-mail já está cadastrado.');
     }
 
-    const { hash, salt } = hashPassword(password);
-    const userId = `usr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const { hash, salt } = await hashPassword(password);
+    const userId = randomUUID();
     const now = new Date().toISOString();
 
     await this.pool.query(
@@ -148,26 +168,19 @@ export class PostgresRepository implements IRepository {
     const userProfile: ProviderProfile = {
       companyName: `${name.trim()} Pinturas & Acabamentos`,
       contactName: name.trim(),
-      phones: ['(11) 99999-9999'],
-      address: 'Atendimento em toda a região',
+      phones: [],
+      address: '',
     };
     await this.updateProfile(userProfile, userId);
 
     // Criar sessão de 30 dias
     const token = generateSessionToken();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     await this.pool.query(
       `INSERT INTO sessions (token, user_id, created_at, expires_at)
        VALUES ($1, $2, $3, $4)`,
-      [token, userId, now, expiresAt]
+      [hashSessionToken(token), userId, now, expiresAt]
     );
-
-    // Se houver compra pendente da Kiwify, ativa automaticamente
-    const pendingPlan = await this.getPendingUpgrade(cleanEmail);
-    if (pendingPlan) {
-      await this.upgradeSubscription(pendingPlan, userId);
-      await this.removePendingUpgrade(cleanEmail);
-    }
 
     const subscription = await this.getSubscription(userId);
 
@@ -197,19 +210,19 @@ export class PostgresRepository implements IRepository {
       throw new Error('E-mail ou senha incorretos.');
     }
 
-    const passwordMatch = verifyPassword(password, user.passwordHash, user.salt);
+    const passwordMatch = await verifyPassword(password, user.passwordHash, user.salt);
     if (!passwordMatch) {
       throw new Error('E-mail ou senha incorretos.');
     }
 
     const token = generateSessionToken();
     const now = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
     await this.pool.query(
       `INSERT INTO sessions (token, user_id, created_at, expires_at)
        VALUES ($1, $2, $3, $4)`,
-      [token, user.id, now, expiresAt]
+      [hashSessionToken(token), user.id, now, expiresAt]
     );
 
     const profile = await this.getProfile(user.id);
@@ -238,7 +251,7 @@ export class PostgresRepository implements IRepository {
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token = $1`,
-      [token]
+      [hashSessionToken(token)]
     );
 
     if (res.rows.length === 0) return undefined;
@@ -258,7 +271,7 @@ export class PostgresRepository implements IRepository {
   }
 
   async deleteSession(token: string): Promise<boolean> {
-    const res = await this.pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+    const res = await this.pool.query('DELETE FROM sessions WHERE token = $1', [hashSessionToken(token)]);
     return (res.rowCount ?? 0) > 0;
   }
 
@@ -350,8 +363,8 @@ export class PostgresRepository implements IRepository {
     const defaultProfile: ProviderProfile = {
       companyName: 'Pintura & Acabamentos Residenciais',
       contactName: 'Profissional da Pintura',
-      phones: ['(11) 99999-9999'],
-      address: 'Atendimento em toda a região',
+      phones: [],
+      address: '',
       pixKey: '',
     };
 
@@ -401,45 +414,35 @@ export class PostgresRepository implements IRepository {
 
   // --- PROPOSTAS ---
 
-  async listProposals(userId?: string): Promise<Proposal[]> {
-    let query = 'SELECT * FROM proposals';
-    const params: unknown[] = [];
-    if (userId) {
-      query += ' WHERE user_id = $1';
-      params.push(userId);
-    }
-    query += ' ORDER BY created_at DESC';
-
-    const res = await this.pool.query(query, params);
+  async listProposals(userId: string): Promise<Proposal[]> {
+    const res = await this.pool.query('SELECT * FROM proposals WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
     return res.rows.map((row) => this.mapProposalRow(row));
   }
 
-  async getProposalById(id: string, userId?: string): Promise<Proposal | undefined> {
-    const res = await this.pool.query('SELECT * FROM proposals WHERE id = $1', [id]);
+  async getProposalById(id: string, userId: string): Promise<Proposal | undefined> {
+    const res = await this.pool.query('SELECT * FROM proposals WHERE id = $1 AND user_id = $2', [id, userId]);
     if (res.rows.length === 0) return undefined;
-    const proposal = this.mapProposalRow(res.rows[0]);
-
-    if (userId && proposal.userId !== userId) {
-      return undefined;
-    }
-    return proposal;
+    return this.mapProposalRow(res.rows[0]);
   }
 
-  async saveProposal(proposal: Proposal, userId?: string): Promise<Proposal> {
-    const existing = await this.getProposalById(proposal.id);
+  async getPublicProposalByToken(token: string): Promise<Proposal | undefined> {
+    const res = await this.pool.query('SELECT * FROM proposals WHERE public_token = $1', [token]);
+    return res.rows[0] ? this.mapProposalRow(res.rows[0]) : undefined;
+  }
+
+  async saveProposal(proposal: Proposal, userId: string): Promise<Proposal> {
+    const id = proposal.id || randomUUID();
+    const existing = await this.getProposalById(id, userId);
     const now = new Date().toISOString();
-    const countRes = await this.pool.query('SELECT COUNT(*) FROM proposals');
+    const countRes = await this.pool.query('SELECT COUNT(*) FROM proposals WHERE user_id = $1', [userId]);
     const totalCount = parseInt(countRes.rows[0].count, 10) || 0;
 
-    const targetUserId = userId || proposal.userId || existing?.userId;
+    const targetUserId = userId;
+    const publicToken = existing?.publicToken || proposal.publicToken || generatePublicProposalToken();
     const proposalNumber = proposal.proposalNumber || existing?.proposalNumber || this.generateNumber(totalCount + 1);
-
     if (existing) {
-      if (userId && existing.userId && existing.userId !== userId) {
-        throw new Error('Não autorizado a alterar proposta de outro usuário.');
-      }
-
-      await this.pool.query(
+      if (existing.status === 'APPROVED') throw new Error('PROPOSAL_ALREADY_APPROVED');
+      const updated = await this.pool.query(
         `UPDATE proposals SET
            proposal_number = $1,
            status = $2,
@@ -452,8 +455,12 @@ export class PostgresRepository implements IRepository {
            approved_at = $9,
            signer_name = $10,
            signature = $11,
+           public_token = $12,
+           signer_ip = $13,
+           signer_user_agent = $14,
+           signed_content_hash = $15,
            updated_at = NOW()
-         WHERE id = $12`,
+         WHERE id = $16 AND user_id = $17 AND status <> 'APPROVED'`,
         [
           proposalNumber,
           proposal.status,
@@ -466,23 +473,30 @@ export class PostgresRepository implements IRepository {
           proposal.approvedAt ? new Date(proposal.approvedAt) : null,
           proposal.signerName || null,
           proposal.signature || null,
-          proposal.id,
+          publicToken,
+          proposal.signerIp || null,
+          proposal.signerUserAgent || null,
+          proposal.signedContentHash || null,
+          id,
+          userId,
         ]
       );
+      if (updated.rowCount === 0) throw new Error('PROPOSAL_ALREADY_APPROVED');
     } else {
       await this.pool.query(
         `INSERT INTO proposals (
-           id, user_id, proposal_number, status, client, areas, pricing,
-           terms, view_count, viewed_at, approved_at, signer_name,
-           signature, created_at, updated_at
+           id, user_id, public_token, proposal_number, status, client, areas, pricing,
+           terms, view_count, viewed_at, approved_at, signer_name, signature,
+           signer_ip, signer_user_agent, signed_content_hash, created_at, updated_at
          ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7,
-           $8, $9, $10, $11, $12,
-           $13, $14, NOW()
+           $1, $2, $3, $4, $5, $6, $7, $8,
+           $9, $10, $11, $12, $13,
+           $14, $15, $16, $17, $18, NOW()
          )`,
         [
-          proposal.id,
+          id,
           targetUserId || null,
+          publicToken,
           proposalNumber,
           proposal.status || 'DRAFT',
           JSON.stringify(proposal.client),
@@ -494,36 +508,35 @@ export class PostgresRepository implements IRepository {
           proposal.approvedAt ? new Date(proposal.approvedAt) : null,
           proposal.signerName || null,
           proposal.signature || null,
+          proposal.signerIp || null,
+          proposal.signerUserAgent || null,
+          proposal.signedContentHash || null,
           proposal.createdAt ? new Date(proposal.createdAt) : new Date(now),
         ]
       );
     }
 
-    const saved = await this.getProposalById(proposal.id);
+    const saved = await this.getProposalById(id, userId);
     return saved || proposal;
   }
 
-  async deleteProposal(id: string, userId?: string): Promise<boolean> {
-    const existing = await this.getProposalById(id);
-    if (!existing) return false;
-    if (userId && existing.userId && existing.userId !== userId) {
-      return false;
-    }
-    const res = await this.pool.query('DELETE FROM proposals WHERE id = $1', [id]);
+  async deleteProposal(id: string, userId: string): Promise<boolean> {
+    const res = await this.pool.query('DELETE FROM proposals WHERE id = $1 AND user_id = $2', [id, userId]);
     return (res.rowCount ?? 0) > 0;
   }
 
-  async duplicateProposal(id: string, newClientName?: string, userId?: string): Promise<Proposal | undefined> {
+  async duplicateProposal(id: string, newClientName: string | undefined, userId: string): Promise<Proposal | undefined> {
     const original = await this.getProposalById(id, userId);
     if (!original) return undefined;
 
-    const countRes = await this.pool.query('SELECT COUNT(*) FROM proposals');
+    const countRes = await this.pool.query('SELECT COUNT(*) FROM proposals WHERE user_id = $1', [userId]);
     const totalCount = parseInt(countRes.rows[0].count, 10) || 0;
 
     const duplicated: Proposal = {
       ...original,
-      id: `prop-${Date.now()}`,
-      userId: userId || original.userId,
+      id: randomUUID(),
+      userId,
+      publicToken: generatePublicProposalToken(),
       proposalNumber: this.generateNumber(totalCount + 1),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -542,19 +555,20 @@ export class PostgresRepository implements IRepository {
     return this.saveProposal(duplicated, userId);
   }
 
-  async trackView(id: string): Promise<Proposal | undefined> {
-    const proposal = await this.getProposalById(id);
-    if (!proposal) return undefined;
+  async trackViewByPublicToken(token: string): Promise<Proposal | undefined> {
+    const proposal = await this.getPublicProposalByToken(token);
+    if (!proposal?.userId) return undefined;
 
     proposal.viewCount = (proposal.viewCount || 0) + 1;
     proposal.viewedAt = new Date().toISOString();
     if (proposal.status === 'DRAFT') {
       proposal.status = 'SENT';
     }
+    if (!proposal.userId) return undefined;
     return this.saveProposal(proposal, proposal.userId);
   }
 
-  async approveProposal(id: string, signerName: string, signature: string): Promise<Proposal | undefined> {
+  async approveProposalByPublicToken(token: string, signerName: string, signature: string, context: ProposalApprovalContext): Promise<Proposal | undefined> {
     if (!signerName || typeof signerName !== 'string' || signerName.trim().length < 2) {
       throw new Error('Nome do signatário inválido (mínimo de 2 caracteres).');
     }
@@ -572,14 +586,19 @@ export class PostgresRepository implements IRepository {
       throw new Error('Tamanho da assinatura digital excede o limite máximo permitido (500 KB).');
     }
 
-    const proposal = await this.getProposalById(id);
+    const proposal = await this.getPublicProposalByToken(token);
     if (!proposal) return undefined;
-
-    proposal.status = 'APPROVED';
-    proposal.approvedAt = new Date().toISOString();
-    proposal.signerName = signerName.trim();
-    proposal.signature = signature;
-    return this.saveProposal(proposal, proposal.userId);
+    if (proposal.status !== 'SENT' || !proposal.userId) throw new Error('PROPOSAL_NOT_APPROVABLE');
+    const approvedAt = new Date().toISOString();
+    const contentHash = hashProposalContent(proposal);
+    const result = await this.pool.query(
+      `UPDATE proposals SET status = 'APPROVED', approved_at = $1, signer_name = $2, signature = $3,
+         signer_ip = $4, signer_user_agent = $5, signed_content_hash = $6, updated_at = NOW()
+       WHERE public_token = $7 AND user_id = $8 AND status = 'SENT' RETURNING *`,
+      [approvedAt, signerName.trim(), signature, context.ip || null, context.userAgent || null, contentHash, token, proposal.userId]
+    );
+    if (!result.rows[0]) throw new Error('PROPOSAL_NOT_APPROVABLE');
+    return this.mapProposalRow(result.rows[0]);
   }
 
   // --- ASSINATURAS E QUOTAS ---
@@ -606,7 +625,7 @@ export class PostgresRepository implements IRepository {
     }
 
     const config = PLANS_CONFIG[planId] || PLANS_CONFIG.free;
-    const proposals = await this.listProposals(userId);
+    const proposals = userId ? await this.listProposals(userId) : [];
 
     let usedCount = 0;
     if (planId === 'free') {
@@ -626,7 +645,7 @@ export class PostgresRepository implements IRepository {
     };
   }
 
-  async checkQuota(userId?: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }> {
+  async checkQuota(userId: string): Promise<{ allowed: boolean; subscription: UserSubscription; message?: string }> {
     const sub = await this.getSubscription(userId);
     if (sub.monthlyLimit !== -1 && sub.usedProposalsCount >= sub.monthlyLimit) {
       const planName = PLANS_CONFIG[sub.planId]?.name || sub.planId;
@@ -684,6 +703,10 @@ export class PostgresRepository implements IRepository {
       approvedAt: row.approved_at ? (row.approved_at.toISOString ? row.approved_at.toISOString() : String(row.approved_at)) : undefined,
       signerName: row.signer_name || undefined,
       signature: row.signature || undefined,
+      publicToken: row.public_token || undefined,
+      signerIp: row.signer_ip || undefined,
+      signerUserAgent: row.signer_user_agent || undefined,
+      signedContentHash: row.signed_content_hash || undefined,
       createdAt: row.created_at ? (row.created_at.toISOString ? row.created_at.toISOString() : String(row.created_at)) : new Date().toISOString(),
       updatedAt: row.updated_at ? (row.updated_at.toISOString ? row.updated_at.toISOString() : String(row.updated_at)) : new Date().toISOString(),
     };
@@ -691,5 +714,33 @@ export class PostgresRepository implements IRepository {
 
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  async claimWebhookEvent(eventId: string): Promise<'claimed' | 'processed' | 'processing'> {
+    const inserted = await this.pool.query(
+      `INSERT INTO webhook_events (event_id, status) VALUES ($1, 'PROCESSING')
+       ON CONFLICT (event_id) DO NOTHING RETURNING event_id`,
+      [eventId]
+    );
+    if (inserted.rows.length) return 'claimed';
+    const current = await this.pool.query('SELECT status, updated_at FROM webhook_events WHERE event_id = $1', [eventId]);
+    if (current.rows[0]?.status === 'PROCESSED') return 'processed';
+    const leaseExpired = !current.rows[0] || new Date(current.rows[0].updated_at).getTime() < Date.now() - 5 * 60 * 1000;
+    if (!leaseExpired) return 'processing';
+    const reclaimed = await this.pool.query(
+      `UPDATE webhook_events SET status = 'PROCESSING', updated_at = NOW()
+       WHERE event_id = $1 AND status = 'PROCESSING' AND updated_at < NOW() - INTERVAL '5 minutes'
+       RETURNING event_id`,
+      [eventId]
+    );
+    return reclaimed.rows.length ? 'claimed' : 'processing';
+  }
+
+  async completeWebhookEvent(eventId: string): Promise<void> {
+    await this.pool.query("UPDATE webhook_events SET status = 'PROCESSED', updated_at = NOW() WHERE event_id = $1", [eventId]);
+  }
+
+  async releaseWebhookEvent(eventId: string): Promise<void> {
+    await this.pool.query("DELETE FROM webhook_events WHERE event_id = $1 AND status = 'PROCESSING'", [eventId]);
   }
 }

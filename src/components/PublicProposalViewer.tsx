@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Proposal, ProviderProfile } from '../types.js';
+import { PublicProposalDTO, ProviderProfile } from '../types.js';
 import { api } from '../services/api.js';
 import { generateProposalPDF } from '../utils/pdfGenerator.js';
 import { 
@@ -27,7 +27,7 @@ interface PublicProposalViewerProps {
 }
 
 export const PublicProposalViewer: React.FC<PublicProposalViewerProps> = ({ proposalId, onBack }) => {
-  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [proposal, setProposal] = useState<PublicProposalDTO | null>(null);
   const [profile, setProfile] = useState<ProviderProfile | null>(null);
   const [hasWatermark, setHasWatermark] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -54,18 +54,12 @@ export const PublicProposalViewer: React.FC<PublicProposalViewerProps> = ({ prop
     async function loadData() {
       try {
         setLoading(true);
-        const [propData, profData, subData] = await Promise.all([
-          api.getProposal(proposalId),
-          api.getProfile().catch(() => null),
-          api.getSubscription().catch(() => null),
-        ]);
+        const publicData = await api.getPublicProposal(proposalId);
 
-        setProposal(propData);
-        setProfile(profData);
-        if (subData) {
-          setHasWatermark(subData.hasWatermark);
-        }
-        setSignerName(propData.client.name || '');
+        setProposal(publicData.proposal);
+        setProfile(publicData.profile);
+        setHasWatermark(publicData.hasWatermark);
+        setSignerName(publicData.proposal.client.name || '');
 
         // Registrar visualização automaticamente
         try {
@@ -465,7 +459,7 @@ export const PublicProposalViewer: React.FC<PublicProposalViewerProps> = ({ prop
             )}
 
             {/* Assinatura Digital do Cliente (se aprovado) */}
-            {isApproved && proposal.signature && (
+            {isApproved && (
               <div className="border border-emerald-300 bg-emerald-50/50 rounded-2xl p-6">
                 <div className="flex items-center gap-2 mb-3 text-emerald-900">
                   <ShieldCheck className="w-5 h-5 text-emerald-600" />
@@ -473,18 +467,6 @@ export const PublicProposalViewer: React.FC<PublicProposalViewerProps> = ({ prop
                 </div>
 
                 <div className="flex flex-col sm:flex-row items-center gap-6">
-                  <div className="bg-white p-3 rounded-xl border border-emerald-200 shadow-sm max-w-xs w-full">
-                    <img 
-                      src={proposal.signature} 
-                      alt="Assinatura Digital do Cliente" 
-                      className="h-24 w-full object-contain"
-                    />
-                    <div className="text-center border-t border-slate-200 pt-1.5 mt-1.5">
-                      <span className="text-xs font-semibold text-slate-700 block">{proposal.signerName}</span>
-                      <span className="text-[10px] text-slate-400 block font-mono">Assinado digitalmente</span>
-                    </div>
-                  </div>
-
                   <div className="text-xs sm:text-sm text-slate-600 space-y-1">
                     <p><strong>Signatário:</strong> {proposal.signerName}</p>
                     <p><strong>Data do Aceite:</strong> {formatDate(proposal.approvedAt)}</p>

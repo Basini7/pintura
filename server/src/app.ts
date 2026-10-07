@@ -11,11 +11,30 @@ import { createApiRouter } from './routes/api.js';
 export function createApp(customRepository?: IRepository) {
   const app = express();
   const repository = customRepository || new JsonRepository();
+  const production = process.env.NODE_ENV === 'production';
+  if (production) {
+    const configuredTrustProxy = process.env.TRUST_PROXY;
+    const numericTrustProxy = configuredTrustProxy ? Number(configuredTrustProxy) : NaN;
+    app.set('trust proxy', Number.isNaN(numericTrustProxy) ? configuredTrustProxy || 1 : numericTrustProxy);
+  }
 
   // 1. Cabeçalhos de Segurança HTTP (Helmet)
   app.use(
     helmet({
-      contentSecurityPolicy: false, // Compatível com SPAs dinâmicos, Vite e assinaturas em Base64
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:', 'blob:'],
+          fontSrc: ["'self'", 'data:'],
+          connectSrc: ["'self'"],
+          objectSrc: ["'none'"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
+          frameAncestors: ["'self'"],
+        },
+      },
       crossOriginEmbedderPolicy: false,
     })
   );
@@ -23,13 +42,15 @@ export function createApp(customRepository?: IRepository) {
   // 2. Restrição de CORS
   const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-    : ['http://localhost:3000', 'http://localhost:5173', 'https://propostadopintor.com.br'];
+    : production
+      ? ['https://propostadopintor.com.br']
+      : ['http://localhost:3000', 'http://localhost:5173', 'https://propostadopintor.com.br'];
 
   app.use(
     cors({
       origin: (origin, callback) => {
-        // Permitir requisições sem origin (como mobile apps, curl, server-to-server) ou origens permitidas
-        if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
+        const localDevelopmentOrigin = !production && Boolean(origin?.startsWith('http://localhost:'));
+        if (!origin || allowedOrigins.includes(origin) || localDevelopmentOrigin) {
           callback(null, true);
         } else {
           callback(null, false);
@@ -37,7 +58,7 @@ export function createApp(customRepository?: IRepository) {
       },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Require-Auth'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
     })
   );
 
@@ -54,6 +75,15 @@ export function createApp(customRepository?: IRepository) {
   });
 
   app.use('/api', apiLimiter);
+
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: production ? 10 : 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'TOO_MANY_LOGIN_ATTEMPTS', message: 'Muitas tentativas. Aguarde antes de tentar novamente.' },
+  });
+  app.use('/api/auth/login', loginLimiter);
 
   app.get('/api/health', (_req, res) => {
     res.json({

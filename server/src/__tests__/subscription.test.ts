@@ -10,11 +10,18 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
   let tempDir: string;
   let repository: JsonRepository;
   let app: any;
+  let authToken: string;
+  let userId: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'saas-sub-test-'));
     repository = new JsonRepository(tempDir);
     app = createApp(repository);
+    const registration = await request(app)
+      .post('/api/auth/register')
+      .send({ name: 'Pintor Quotas', email: `quota-${Date.now()}@test.com`, password: 'senhaValida123' });
+    authToken = registration.headers['set-cookie'][0].split(';')[0];
+    userId = registration.body.user.id;
   });
 
   afterEach(async () => {
@@ -22,7 +29,7 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
   });
 
   it('deve iniciar com o plano Degustação Gratuita (limite: 1 proposta, com marca d’água)', async () => {
-    const res = await request(app).get('/api/subscription');
+    const res = await request(app).get('/api/subscription').set('Cookie', authToken);
     expect(res.status).toBe(200);
     expect(res.body.planId).toBe('free');
     expect(res.body.monthlyLimit).toBe(1);
@@ -34,6 +41,7 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
     // 1. Criar a primeira proposta gratuita
     const res1 = await request(app)
       .post('/api/proposals')
+      .set('Cookie', authToken)
       .send({
         id: 'prop-free-1',
         client: { name: 'Cliente Degustação 1', address: 'Rua A, 10' },
@@ -44,14 +52,16 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
       });
 
     expect(res1.status).toBe(201);
+    const proposalId = res1.body.id;
 
     // Conferir consumo de cota (1/1)
-    const subCheck1 = await request(app).get('/api/subscription');
+    const subCheck1 = await request(app).get('/api/subscription').set('Cookie', authToken);
     expect(subCheck1.body.usedProposalsCount).toBe(1);
 
     // 2. Tentar criar a segunda proposta no plano gratuito (deve bloquear!)
     const res2 = await request(app)
       .post('/api/proposals')
+      .set('Cookie', authToken)
       .send({
         id: 'prop-free-2',
         client: { name: 'Cliente Degustação 2', address: 'Rua B, 20' },
@@ -67,7 +77,8 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
 
     // 3. Tentar duplicar também deve ser bloqueado
     const dupRes = await request(app)
-      .post('/api/proposals/prop-free-1/duplicate')
+      .post(`/api/proposals/${proposalId}/duplicate`)
+      .set('Cookie', authToken)
       .send({ newClientName: 'Cliente Duplicado' });
 
     expect(dupRes.status).toBe(403);
@@ -76,8 +87,9 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
     // 4. Edição da proposta existente NÃO deve ser bloqueada (não consome cota adicional)
     const updateRes = await request(app)
       .post('/api/proposals')
+      .set('Cookie', authToken)
       .send({
-        id: 'prop-free-1',
+        id: proposalId,
         client: { name: 'Cliente Degustação 1 Editado', address: 'Rua A, 10' },
         areas: [],
         pricing: { mode: 'GLOBAL', totalAmount: 2500, discount: 0, netAmount: 2500 },
@@ -102,17 +114,14 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
       });
 
     // 2. Fazer Upgrade para Básico (4 propostas/mês)
-    const upgradeBasic = await request(app)
-      .post('/api/subscription/upgrade')
-      .send({ planId: 'basic' });
-
-    expect(upgradeBasic.status).toBe(200);
-    expect(upgradeBasic.body.planId).toBe('basic');
-    expect(upgradeBasic.body.monthlyLimit).toBe(4);
+    const upgradeBasic = await repository.upgradeSubscription('basic', userId);
+    expect(upgradeBasic.planId).toBe('basic');
+    expect(upgradeBasic.monthlyLimit).toBe(4);
 
     // 3. Agora a 2ª proposta deve passar com sucesso
     const res2 = await request(app)
       .post('/api/proposals')
+      .set('Cookie', authToken)
       .send({
         id: 'prop-2',
         client: { name: 'Cliente 2', address: 'Rua 2' },
@@ -125,13 +134,9 @@ describe('Gestão de Quotas e Assinaturas SaaS (Subscription & Quotas)', () => {
     expect(res2.status).toBe(201);
 
     // 4. Upgrade para o Plano Pro Ilimitado (R$ 59)
-    const upgradePro = await request(app)
-      .post('/api/subscription/upgrade')
-      .send({ planId: 'pro' });
-
-    expect(upgradePro.status).toBe(200);
-    expect(upgradePro.body.planId).toBe('pro');
-    expect(upgradePro.body.monthlyLimit).toBe(-1); // Ilimitado
-    expect(upgradePro.body.hasWatermark).toBe(false); // Sem marca d'água!
+    const upgradePro = await repository.upgradeSubscription('pro', userId);
+    expect(upgradePro.planId).toBe('pro');
+    expect(upgradePro.monthlyLimit).toBe(-1); // Ilimitado
+    expect(upgradePro.hasWatermark).toBe(false); // Sem marca d'água!
   });
 });
