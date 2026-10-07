@@ -45,7 +45,10 @@ export const api = {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Erro ao criar conta');
+      if (res.status === 404) {
+        throw new Error('Serviço de API indisponível (404). O backend ainda não foi implantado na Vercel.');
+      }
+      throw new Error(err.error || `Erro ao criar conta (${res.status})`);
     }
     const data: AuthResponse = await res.json();
     setToken(data.token);
@@ -60,7 +63,10 @@ export const api = {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'E-mail ou senha inválidos');
+      if (res.status === 404) {
+        throw new Error('Serviço de API indisponível (404). O backend ainda não foi implantado na Vercel.');
+      }
+      throw new Error(err.error || 'E-mail ou senha incorretos');
     }
     const data: AuthResponse = await res.json();
     setToken(data.token);
