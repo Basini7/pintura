@@ -25,11 +25,12 @@ afterEach(() => {
 });
 
 describe('Storage de produção', () => {
-  it('falha no boot sem segredo e IDs de produto do webhook', async () => {
+  it('não bloqueia o boot por falta de configuração opcional da Kiwify', async () => {
     process.env.NODE_ENV = 'production';
-    for (const key of configKeys.filter((key) => key !== 'NODE_ENV')) delete process.env[key];
+    for (const key of configKeys.filter((key) => key !== 'NODE_ENV' && key !== 'STORAGE_BACKEND')) delete process.env[key];
+    process.env.STORAGE_BACKEND = 'supabase';
 
-    await expect(createStorageRepository()).rejects.toThrow('KIWIFY_WEBHOOK_SECRET');
+    await expect(createStorageRepository()).rejects.toThrow('Supabase exige SUPABASE_URL');
   });
 
   it('não seleciona storage implícito nem recorre ao JSON em produção', async () => {

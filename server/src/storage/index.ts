@@ -19,17 +19,6 @@ export async function createStorageRepository(): Promise<IRepository> {
   const production = process.env.NODE_ENV === 'production';
 
   if (production) {
-    const requiredPaymentConfig = [
-      'KIWIFY_WEBHOOK_SECRET',
-      'KIWIFY_PRODUCT_ID_BASIC',
-      'KIWIFY_PRODUCT_ID_INTERMEDIATE',
-      'KIWIFY_PRODUCT_ID_PRO',
-    ];
-    const missingPaymentConfig = requiredPaymentConfig.filter((key) => !process.env[key]);
-    if (missingPaymentConfig.length) {
-      throw new Error(`Configuração obrigatória ausente: ${missingPaymentConfig.join(', ')}`);
-    }
-
     const backend = process.env.STORAGE_BACKEND;
     if (backend === 'supabase') {
       if (!supabaseUrl || !supabaseKey) throw new Error('Supabase exige SUPABASE_URL e SUPABASE_SECRET_KEY.');
