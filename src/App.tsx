@@ -84,6 +84,22 @@ export const App: React.FC = () => {
   }, []);
 
   const handleTabChange = (tab: 'landing' | 'new' | 'list' | 'profile') => {
+    if (tab === 'new') {
+      if (!user) {
+        setAuthMode('register');
+        setIsAuthOpen(true);
+        return;
+      }
+      if (
+        subscription &&
+        subscription.monthlyLimit !== -1 &&
+        subscription.usedProposalsCount >= subscription.monthlyLimit &&
+        !editingProposal
+      ) {
+        setIsUpgradeOpen(true);
+        return;
+      }
+    }
     if ((tab === 'list' || tab === 'profile') && !user) {
       setAuthMode('login');
       setIsAuthOpen(true);
@@ -266,8 +282,13 @@ export const App: React.FC = () => {
               catalog={catalog}
               profile={profile}
               subscription={subscription}
+              user={user}
               onSaved={handleProposalSaved}
               onOpenUpgrade={() => setIsUpgradeOpen(true)}
+              onRequireAuth={() => {
+                setAuthMode('register');
+                setIsAuthOpen(true);
+              }}
             />
           </div>
         )}

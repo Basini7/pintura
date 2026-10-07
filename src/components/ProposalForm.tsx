@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Proposal, WorkAreaConfig, SelectedAreaScope, ProviderProfile, PricingMode, UserSubscription } from '../types.js';
+import { Proposal, WorkAreaConfig, SelectedAreaScope, ProviderProfile, PricingMode, UserSubscription, User } from '../types.js';
 import { AreaSelectorModal } from './AreaSelectorModal.js';
 import { api } from '../services/api.js';
 import { generateWhatsAppMessage, openWhatsAppLink } from '../utils/whatsappShare.js';
@@ -19,7 +19,9 @@ import {
   Layers, 
   Calendar,
   AlertCircle,
-  Eye
+  Eye,
+  Zap,
+  Lock
 } from 'lucide-react';
 
 interface ProposalFormProps {
@@ -27,8 +29,10 @@ interface ProposalFormProps {
   catalog: WorkAreaConfig[];
   profile: ProviderProfile;
   subscription?: UserSubscription | null;
+  user?: User | null;
   onSaved: (proposal: Proposal) => void;
   onOpenUpgrade?: () => void;
+  onRequireAuth?: () => void;
 }
 
 export const ProposalForm: React.FC<ProposalFormProps> = ({
@@ -36,8 +40,10 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
   catalog,
   profile,
   subscription,
+  user,
   onSaved,
   onOpenUpgrade,
+  onRequireAuth,
 }) => {
   const [proposal, setProposal] = useState<Proposal>(() => {
     if (initialProposal) return initialProposal;
@@ -189,10 +195,18 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
     });
   };
 
-  const handleSave = async () => {
+  const handleSave = async (): Promise<Proposal | null> => {
     if (!proposal.client.name.trim()) {
       alert('Por favor, preencha o nome do cliente.');
-      return;
+      return null;
+    }
+    if (!user) {
+      if (onRequireAuth) {
+        onRequireAuth();
+      } else {
+        alert('Crie sua conta ou faça login para salvar sua proposta.');
+      }
+      return null;
     }
     setSaving(true);
     try {
@@ -200,8 +214,9 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
       setProposal(saved);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
-      showToast('Proposta salva no histórico local!');
+      showToast('Proposta salva com sucesso!');
       onSaved(saved);
+      return saved;
     } catch (err: any) {
       if (err.code === 'QUOTA_EXCEEDED') {
         if (onOpenUpgrade) {
@@ -212,27 +227,86 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
       } else {
         alert(err.message || 'Erro ao salvar proposta.');
       }
+      return null;
     } finally {
       setSaving(false);
     }
   };
 
-  const handleWhatsApp = () => {
+  const handleWhatsApp = async () => {
     if (!proposal.client.name.trim()) {
       alert('Preencha o nome do cliente antes de gerar a mensagem.');
       return;
     }
-    const msg = generateWhatsAppMessage(proposal, profile);
-    openWhatsAppLink(proposal.client.phone, msg);
+    if (!user) {
+      if (onRequireAuth) {
+        onRequireAuth();
+      } else {
+        alert('Crie sua conta gratuita ou faça login para enviar propostas pelo WhatsApp.');
+      }
+      return;
+    }
+
+    const isNew = !initialProposal || proposal.proposalNumber === 'NOVA PROPOSTA';
+    const isQuotaExceeded = !!(subscription && subscription.monthlyLimit !== -1 && subscription.usedProposalsCount >= subscription.monthlyLimit);
+
+    if (isNew && isQuotaExceeded) {
+      if (onOpenUpgrade) {
+        onOpenUpgrade();
+      } else {
+        alert('Limite de propostas do plano atingido. Faça upgrade para continuar!');
+      }
+      return;
+    }
+
+    // Salvar antes de enviar se for nova proposta para registrar no histórico e debitar da cota
+    let currentProposal = proposal;
+    if (isNew) {
+      const saved = await handleSave();
+      if (!saved) return;
+      currentProposal = saved;
+    }
+
+    const msg = generateWhatsAppMessage(currentProposal, profile);
+    openWhatsAppLink(currentProposal.client.phone, msg);
     showToast('Mensagem formatada copiada e abrindo WhatsApp...');
   };
 
-  const handlePDF = () => {
+  const handlePDF = async () => {
     if (!proposal.client.name.trim()) {
       alert('Preencha o nome do cliente antes de gerar o PDF.');
       return;
     }
-    generateProposalPDF(proposal, profile, subscription?.hasWatermark ?? true);
+    if (!user) {
+      if (onRequireAuth) {
+        onRequireAuth();
+      } else {
+        alert('Crie sua conta gratuita (1 proposta inclusa) ou faça login para exportar em PDF.');
+      }
+      return;
+    }
+
+    const isNew = !initialProposal || proposal.proposalNumber === 'NOVA PROPOSTA';
+    const isQuotaExceeded = !!(subscription && subscription.monthlyLimit !== -1 && subscription.usedProposalsCount >= subscription.monthlyLimit);
+
+    if (isNew && isQuotaExceeded) {
+      if (onOpenUpgrade) {
+        onOpenUpgrade();
+      } else {
+        alert('Limite de propostas do plano atingido. Faça upgrade para continuar!');
+      }
+      return;
+    }
+
+    // Salvar antes de gerar PDF se for nova proposta para garantir cota e integridade
+    let currentProposal = proposal;
+    if (isNew) {
+      const saved = await handleSave();
+      if (!saved) return;
+      currentProposal = saved;
+    }
+
+    generateProposalPDF(currentProposal, profile, subscription?.hasWatermark ?? true);
     showToast('Download do PDF formal iniciado!');
   };
 
@@ -242,6 +316,45 @@ export const ProposalForm: React.FC<ProposalFormProps> = ({
 
   return (
     <div className="max-w-4xl mx-auto px-3 sm:px-4 py-6 space-y-6">
+      {/* Banner de Limite Atingido / Upgrade */}
+      {subscription && subscription.monthlyLimit !== -1 && subscription.usedProposalsCount >= subscription.monthlyLimit && (!initialProposal || proposal.proposalNumber === 'NOVA PROPOSTA') && (
+        <div className="bg-[#fff3cd] border border-[#ffeeba] text-[#856404] p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center space-x-3">
+            <AlertCircle className="w-6 h-6 text-[#856404] shrink-0" />
+            <div>
+              <p className="font-bold text-sm">Limite de propostas atingido ({subscription.usedProposalsCount}/{subscription.monthlyLimit})</p>
+              <p className="text-xs text-[#856404]/90">Você atingiu a cota mensal do seu plano. Faça upgrade para gerar e exportar propostas ilimitadas.</p>
+            </div>
+          </div>
+          <button
+            onClick={onOpenUpgrade}
+            className="px-4 py-2 bg-[#0a0a0a] text-white rounded-xl text-xs font-bold hover:bg-[#222] transition shrink-0 flex items-center space-x-1.5 shadow-sm"
+          >
+            <Zap className="w-3.5 h-3.5 text-[#ffb084]" />
+            <span>Fazer Upgrade Agora</span>
+          </button>
+        </div>
+      )}
+
+      {/* Banner para Visitante Não Logado */}
+      {!user && (
+        <div className="bg-[#f0f9ff] border border-[#bae6fd] text-[#0369a1] p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center space-x-3">
+            <Lock className="w-6 h-6 text-[#0369a1] shrink-0" />
+            <div>
+              <p className="font-bold text-sm">Modo de Degustação</p>
+              <p className="text-xs text-[#0369a1]/90">Cadastre-se gratuitamente para salvar e exportar sua proposta em PDF com 1 proposta inclusa sem custos.</p>
+            </div>
+          </div>
+          <button
+            onClick={onRequireAuth}
+            className="px-4 py-2 bg-[#0a0a0a] text-white rounded-xl text-xs font-bold hover:bg-[#222] transition shrink-0"
+          >
+            Criar Conta Gratuita
+          </button>
+        </div>
+      )}
+
       {/* Barra de Ações do Topo */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 flex flex-wrap items-center justify-between gap-3">
         <div>

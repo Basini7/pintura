@@ -34,3 +34,4 @@ Thumbs.db
 # Coverage and test artifacts
 coverage/
 .nyc_output/
+*.pdf
