@@ -4,6 +4,12 @@ import { PlanTier, User } from '../types.js';
  * URLs dos Checkouts da Kiwify para os 3 planos do Proposta do Pintor.
  * Quando você criar os produtos na sua conta da Kiwify, basta colar os links aqui!
  */
+export const VALID_PLAN_TIERS: PlanTier[] = ['free', 'basic', 'intermediate', 'pro'];
+
+export function isValidPlanTier(value: unknown): value is PlanTier {
+  return typeof value === 'string' && VALID_PLAN_TIERS.includes(value as PlanTier);
+}
+
 export const KIWIFY_CHECKOUT_CONFIG: Record<Exclude<PlanTier, 'free'>, string> = {
   basic: '', // Ex: 'https://pay.kiwify.com.br/SEU_LINK_BASICO' (R$ 38/mês)
   intermediate: '', // Ex: 'https://pay.kiwify.com.br/SEU_LINK_INTERMEDIARIO' (R$ 47/mês)
@@ -16,6 +22,7 @@ export const KIWIFY_CHECKOUT_CONFIG: Record<Exclude<PlanTier, 'free'>, string> =
  */
 export function getKiwifyCheckoutUrl(planId: PlanTier, user?: User | null): string | null {
   if (planId === 'free') return null;
+  if (!isValidPlanTier(planId) || planId === 'free') return null;
   const baseUrl = KIWIFY_CHECKOUT_CONFIG[planId];
   if (!baseUrl) return null;
 

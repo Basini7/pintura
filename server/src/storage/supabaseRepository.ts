@@ -326,7 +326,7 @@ export class SupabaseRepository implements IRepository {
   async listProposals(userId?: string): Promise<Proposal[]> {
     let query = this.client.from('proposals').select('*').order('created_at', { ascending: false });
     if (userId) {
-      query = query.or(`user_id.eq.${userId},user_id.is.null`);
+      query = query.eq('user_id', userId);
     }
 
     const { data, error } = await query;
@@ -345,7 +345,7 @@ export class SupabaseRepository implements IRepository {
     if (error || !data) return undefined;
     const proposal = this.mapProposalRow(data);
 
-    if (userId && proposal.userId && proposal.userId !== userId) {
+    if (userId && proposal.userId !== userId) {
       return undefined;
     }
     return proposal;

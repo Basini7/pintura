@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { UserSubscription, PlanTier, User } from '../types.js';
 import { api } from '../services/api.js';
-import { getKiwifyCheckoutUrl } from '../config/payments.js';
+import { getKiwifyCheckoutUrl, isValidPlanTier } from '../config/payments.js';
 import { 
   Check, 
   Sparkles, 
@@ -36,6 +36,11 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   const currentPlan = subscription?.planId || 'free';
 
   const handleSelectPlan = async (planId: PlanTier) => {
+    if (!isValidPlanTier(planId) || planId === 'free') {
+      alert('Plano inválido. Selecione uma opção de assinatura válida.');
+      return;
+    }
+
     const kiwifyUrl = getKiwifyCheckoutUrl(planId, user);
     if (kiwifyUrl) {
       window.open(kiwifyUrl, '_blank');

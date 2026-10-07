@@ -413,7 +413,7 @@ export class JsonRepository implements IRepository {
       const list = JSON.parse(content) as Proposal[];
       const sorted = list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       if (userId) {
-        return sorted.filter((p) => !p.userId || p.userId === userId);
+        return sorted.filter((p) => p.userId === userId);
       }
       return sorted;
     } catch {
@@ -425,7 +425,7 @@ export class JsonRepository implements IRepository {
     const list = await this.listProposals();
     const proposal = list.find((p) => p.id === id);
     if (!proposal) return undefined;
-    if (userId && proposal.userId && proposal.userId !== userId) {
+    if (userId && proposal.userId !== userId) {
       return undefined;
     }
     return proposal;

@@ -33,6 +33,70 @@ describe('Repositório de Persistência JSON (TASK-004)', () => {
     expect(reloaded.companyName).toBe('Minha Pintura Profissional');
   });
 
+  it('deve isolar proposta de usuário e não expor registros órfãos entre contas', async () => {
+    const otherUser = { ...
+      {
+        id: 'user-1',
+        proposalNumber: '',
+        createdAt: '',
+        updatedAt: '',
+        status: 'DRAFT',
+        client: {
+          name: 'Cliente do outro usuário',
+          address: 'Rua do Outro, 45',
+        },
+        areas: [],
+        pricing: {
+          mode: 'GLOBAL',
+          totalAmount: 15000,
+          discount: 0,
+          netAmount: 15000,
+        },
+        terms: {
+          includesMaterials: false,
+          paymentCondition: 'A combinar',
+          withInvoice: false,
+          validityDays: 30,
+        },
+      }
+    };
+
+    const anonymousProposal: Proposal = {
+      id: 'anon-prop',
+      proposalNumber: '',
+      createdAt: '',
+      updatedAt: '',
+      status: 'DRAFT',
+      client: {
+        name: 'Cliente Anônimo',
+        address: 'Rua Anônima, 99',
+      },
+      areas: [],
+      pricing: {
+        mode: 'GLOBAL',
+        totalAmount: 999,
+        discount: 0,
+        netAmount: 999,
+      },
+      terms: {
+        includesMaterials: false,
+        paymentCondition: 'A combinar',
+        withInvoice: false,
+        validityDays: 30,
+      },
+    };
+
+    await repo.saveProposal(otherUser as Proposal, 'user-1');
+    await repo.saveProposal(anonymousProposal, undefined);
+
+    const listForUser2 = await repo.listProposals('user-2');
+    expect(listForUser2).toHaveLength(0);
+
+    const listForUser1 = await repo.listProposals('user-1');
+    expect(listForUser1).toHaveLength(1);
+    expect(listForUser1[0].client.name).toBe('Cliente do outro usuário');
+  });
+
   it('deve criar, listar, atualizar e deletar uma proposta', async () => {
     const newProposal: Proposal = {
       id: 'test-1',

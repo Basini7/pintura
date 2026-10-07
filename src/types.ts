@@ -45,8 +45,11 @@ export interface SelectedAreaScope {
 export interface ClientInfo {
   name: string;
   phone?: string;
+  email?: string;
   address: string;
   city?: string;
+  propertyType?: 'Casa' | 'Apartamento' | 'Sobrado' | 'Comercial' | 'Outro';
+  notes?: string;
 }
 
 export interface ProviderProfile {

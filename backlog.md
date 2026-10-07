@@ -152,3 +152,103 @@
   - [ ] Teste de emissão de proposta externa e interna nos moldes dos anexos.
   - [ ] Relatório de QA (`TEST_RESULTS.md`) com veredito PASS.
 - **Prioridade:** CRÍTICA
+
+---
+
+## FASE 6: MELHORIAS DE UX, PRODUTO E OPERAÇÃO COMERCIAL
+
+### [TASK-011] Redesenho do Flow de Nova Proposta como Editor Comercial
+- **Objetivo:** Transformar a criação da proposta em um fluxo guiado com etapas lógicas de Cliente → Serviços → Valores → Condições → Revisão.
+- **Contexto:** O sistema técnico já existe; agora a prioridade é reduzir fricção e carga cognitiva da experiência.
+- **Dependências:** TASK-006, TASK-007.
+- **Arquivos prováveis:** `src/components/ProposalForm.tsx`, `src/components/ProposalList.tsx`, `src/components/PricingPanel.tsx`, `src/components/ProposalReview.tsx`.
+- **Critérios de aceite:**
+  - [ ] Etapas visuais com resumo financeiro sempre visível.
+  - [ ] Estrutura mobile-first com barra inferior fixa.
+  - [ ] Escopo técnico resumido por padrão e edição detalhada sob demanda.
+  - [ ] Fluxo navegável sem excesso de campos técnicos iniciais.
+- **Prioridade:** CRÍTICA
+
+### [TASK-012] Cliente e Imóvel Reutilizáveis no Fluxo Principal
+- **Objetivo:** Separar cliente, imóvel e proposta para reduzir retrabalho e permitir reaproveitamento.
+- **Contexto:** O cliente e o imóvel devem ser entidades operacionais e não apenas campos embutidos na proposta.
+- **Dependências:** TASK-011.
+- **Arquivos prováveis:** `src/components/CustomerSelector.tsx`, `src/components/PropertySelector.tsx`, `src/types/*.ts`.
+- **Critérios de aceite:**
+  - [ ] Busca por cliente e apresentação de resultados relevantes.
+  - [ ] Cadastro rápido de novo cliente e imóvel.
+  - [ ] Reutilização de imóveis anteriores no mesmo cliente.
+  - [ ] Snapshot preservado em propostas já emitidas.
+- **Prioridade:** ALTA
+
+### [TASK-013] Serviços e Escopo Inteligente com Edição Sob Demanda
+- **Objetivo:** Tornar a seleção de áreas e processos mais natural e menos burocrática.
+- **Contexto:** A estratégia é reduzir a sensação de formulário técnico e aumentar a sensação de editor profissional.
+- **Dependências:** TASK-011, TASK-002.
+- **Arquivos prováveis:** `src/components/AreaScopeSelector.tsx`, `src/components/ScopeEditor.tsx`, `src/data/standardScopes.ts`.
+- **Critérios de aceite:**
+  - [ ] Cartões grandes para seleção de áreas.
+  - [ ] Escopo resolvido automaticamente com base no catálogo.
+  - [ ] Edição detalhada apenas quando necessário.
+  - [ ] Suporte a adicionais e itens opcionais.
+- **Prioridade:** CRÍTICA
+
+### [TASK-014] Precificação, Desconto e Condição de Pagamento dentro do Fluxo
+- **Objetivo:** Posicionar valor e pagamento como protagonistas da criação da proposta.
+- **Contexto:** O sistema já possui precificação, mas precisa de melhor apresentação e clareza comercial.
+- **Dependências:** TASK-004, TASK-011.
+- **Arquivos prováveis:** `src/components/PricingPanel.tsx`, `src/utils/calculations.ts`, `src/types/proposal.ts`.
+- **Critérios de aceite:**
+  - [ ] Suporte a valor global e por área.
+  - [ ] Desconto percentual e nominal.
+  - [ ] Formas de pagamento estruturadas e mais legíveis.
+  - [ ] Prazo estimado e validade da proposta na mesma área de decisão.
+- **Prioridade:** CRÍTICA
+
+### [TASK-015] Autosave, Rascunho e Performance da Geração de Propostas
+- **Objetivo:** Melhorar confiabilidade e responsividade da interface sem quebrar as regras de negócio.
+- **Contexto:** O sistema não pode depender de salvar manualmente em momentos críticos.
+- **Dependências:** TASK-011, TASK-014.
+- **Arquivos prováveis:** `src/components/ProposalForm.tsx`, `src/services/storage.ts`, `src/utils/calculations.ts`.
+- **Critérios de aceite:**
+  - [ ] Autosave automátic o com debounce.
+  - [ ] Indicador de rascunho e último salvamento.
+  - [ ] Cálculo crítico centralizado e menos dependente de interação em tempo real.
+  - [ ] Dados não são perdidos em fechamento do navegador.
+- **Prioridade:** ALTA
+
+### [TASK-016] Revisão Final, Envio e Melhorias no WhatsApp/PDF
+- **Objetivo:** Prover revisão antes do envio e melhorar confiabilidade da entrega final.
+- **Contexto:** A etapa final deve remover erros de comunicação e facilitar a decisão do cliente.
+- **Dependências:** TASK-011, TASK-014, TASK-008, TASK-009.
+- **Arquivos prováveis:** `src/components/ProposalReview.tsx`, `src/utils/whatsappGenerator.ts`, `src/services/pdfGenerator.ts`.
+- **Critérios de aceite:**
+  - [ ] Checklist final com dados do cliente, imóvel, serviços, valor e condições.
+  - [ ] Mensagem WhatsApp mais concisa, com foco em link e resumo.
+  - [ ] PDF formal consistente com a proposta atual.
+- **Prioridade:** ALTA
+
+### [TASK-017] Histórico, Status, Duplicação e Follow-up Comercial
+- **Objetivo:** Evoluir o sistema de gestão para uma operação comercial mais robusta.
+- **Contexto:** O produto deve apoiar não só a criação mas também o acompanhamento da proposta.
+- **Dependências:** TASK-007, TASK-015, TASK-016.
+- **Arquivos prováveis:** `src/components/ProposalList.tsx`, `src/components/ProposalCard.tsx`, `src/services/api.ts`.
+- **Critérios de aceite:**
+  - [ ] Status completo e filtros mais úteis.
+  - [ ] Duplicação inteligente com troca de cliente.
+  - [ ] Visualização e follow-up após proposta enviada.
+  - [ ] Histórico de versões e rastreio de visualização.
+- **Prioridade:** MÉDIA
+
+### [TASK-018] Modelos de Proposta e Dashboard Comercial Inicial
+- **Objetivo:** Aumentar velocidade de criação e oferecer visão comercial básica.
+- **Contexto:** O pintor precisa criar propostas repetidas e acompanhar seu desempenho.
+- **Dependências:** TASK-017.
+- **Arquivos prováveis:** `src/components/Dashboard.tsx`, `src/components/ProposalTemplates.tsx`.
+- **Critérios de aceite:**
+  - [ ] modelos de proposta reutilizáveis;
+  - [ ] dashboard com propostas, valores e médias;
+  - [ ] base para evolução em métricas e conversão.
+- **Prioridade:** MÉDIA
+
+---

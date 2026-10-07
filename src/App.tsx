@@ -9,7 +9,7 @@ import { ProfileModal } from './components/ProfileModal.js';
 import { PublicProposalViewer } from './components/PublicProposalViewer.js';
 import { UpgradeModal } from './components/UpgradeModal.js';
 import { AuthModal } from './components/AuthModal.js';
-import { getKiwifyCheckoutUrl } from './config/payments.js';
+import { getKiwifyCheckoutUrl, isValidPlanTier } from './config/payments.js';
 import { Loader2 } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -109,6 +109,13 @@ export const App: React.FC = () => {
   };
 
   const handleAuthSuccess = async (authData: AuthResponse) => {
+    setProposals([]);
+    setEditingProposal(null);
+    setProfile({
+      companyName: 'Pintura & Acabamentos Residenciais',
+      phones: ['(11) 90000-0000'],
+      address: 'Atendimento em toda a região',
+    });
     setUser(authData.user);
     if (authData.profile) setProfile(authData.profile);
     if (authData.subscription) setSubscription(authData.subscription);
@@ -124,11 +131,17 @@ export const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    await api.logout();
     setUser(null);
     setProposals([]);
+    setEditingProposal(null);
     setSubscription(null);
+    setProfile({
+      companyName: 'Pintura & Acabamentos Residenciais',
+      phones: ['(11) 90000-0000'],
+      address: 'Atendimento em toda a região',
+    });
     setActiveTab('landing');
+    await api.logout();
   };
 
   const handleProposalSaved = (saved: Proposal) => {
@@ -203,22 +216,30 @@ export const App: React.FC = () => {
       setIsAuthOpen(true);
       return;
     }
+
+    if (!isValidPlanTier(planId)) {
+      alert('Plano inválido. Use uma opção válida de assinatura.');
+      return;
+    }
+
     if (planId === 'free') {
       setActiveTab('new');
-    } else {
-      const kiwifyUrl = getKiwifyCheckoutUrl(planId as PlanTier, user);
-      if (kiwifyUrl) {
-        window.open(kiwifyUrl, '_blank');
-      } else {
-        try {
-          const updated = await api.upgradeSubscription(planId as PlanTier);
-          setSubscription(updated);
-          setActiveTab('new');
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : 'Erro ao ativar plano';
-          alert(msg);
-        }
-      }
+      return;
+    }
+
+    const kiwifyUrl = getKiwifyCheckoutUrl(planId, user);
+    if (kiwifyUrl) {
+      window.open(kiwifyUrl, '_blank');
+      return;
+    }
+
+    try {
+      const updated = await api.upgradeSubscription(planId);
+      setSubscription(updated);
+      setActiveTab('new');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erro ao ativar plano';
+      alert(msg);
     }
   };
 
@@ -245,19 +266,21 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#fffaf0] text-[#0a0a0a] w-full max-w-full overflow-x-hidden">
-      <Navbar
-        activeTab={activeTab}
-        setActiveTab={handleTabChange}
-        proposalCount={proposals.length}
-        subscription={subscription}
-        user={user}
-        onOpenUpgrade={() => setIsUpgradeOpen(true)}
-        onOpenAuth={() => {
-          setAuthMode('login');
-          setIsAuthOpen(true);
-        }}
-        onLogout={handleLogout}
-      />
+      {activeTab !== 'landing' && (
+        <Navbar
+          activeTab={activeTab}
+          setActiveTab={handleTabChange}
+          proposalCount={proposals.length}
+          subscription={subscription}
+          user={user}
+          onOpenUpgrade={() => setIsUpgradeOpen(true)}
+          onOpenAuth={() => {
+            setAuthMode('login');
+            setIsAuthOpen(true);
+          }}
+          onLogout={handleLogout}
+        />
+      )}
 
       <main className="flex-1">
         {activeTab === 'landing' && (
@@ -277,7 +300,7 @@ export const App: React.FC = () => {
         {activeTab === 'new' && (
           <div className="py-4">
             <ProposalForm
-              key={editingProposal?.id || 'new-proposal'}
+              key={`${user?.id || 'guest'}-${editingProposal?.id || 'new-proposal'}`}
               initialProposal={editingProposal}
               catalog={catalog}
               profile={profile}

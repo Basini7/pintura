@@ -405,7 +405,7 @@ export class PostgresRepository implements IRepository {
     let query = 'SELECT * FROM proposals';
     const params: unknown[] = [];
     if (userId) {
-      query += ' WHERE user_id = $1 OR user_id IS NULL';
+      query += ' WHERE user_id = $1';
       params.push(userId);
     }
     query += ' ORDER BY created_at DESC';
@@ -419,7 +419,7 @@ export class PostgresRepository implements IRepository {
     if (res.rows.length === 0) return undefined;
     const proposal = this.mapProposalRow(res.rows[0]);
 
-    if (userId && proposal.userId && proposal.userId !== userId) {
+    if (userId && proposal.userId !== userId) {
       return undefined;
     }
     return proposal;
